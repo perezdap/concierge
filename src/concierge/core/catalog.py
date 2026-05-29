@@ -94,6 +94,7 @@ class Catalog:
         tags: list[str] | None = None,
         primitive_type: PrimitiveType | None = None,
         max_risk: str | None = None,
+        names: set[str] | None = None,
         limit: int = 50,
         offset: int = 0,
     ) -> list[CatalogEntry]:
@@ -104,6 +105,8 @@ class Catalog:
 
         out: list[CatalogEntry] = []
         for e in self.store.all():
+            if names is not None and e.canonical_name not in names:
+                continue
             if server and e.server_id != server:
                 continue
             if primitive_type and e.primitive_type != primitive_type:

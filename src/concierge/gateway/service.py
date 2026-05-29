@@ -7,6 +7,7 @@ wire, or auth headers — only `Session` objects and typed args.
 """
 from __future__ import annotations
 
+import json
 import time
 from typing import Any
 
@@ -28,6 +29,7 @@ from ..errors import (
 from ..policy.engine import PolicyEngine
 from ..util.audit import AuditLogger
 from ..util.log import get_logger
+from ..util.payload import PayloadOptions, cap_result_text, slim_schema
 from .primitives import GatewayPrimitive, builtin_primitives
 from .profiles import ProfileRegistry
 
@@ -35,6 +37,14 @@ _log = get_logger("concierge.service")
 
 
 PROTOCOL_VERSION = "2025-06-18"
+
+
+def _safe_bytes(obj: Any) -> int | None:
+    """Serialized UTF-8 byte size of a payload, for metrics. None if unmeasurable."""
+    try:
+        return len(json.dumps(obj, ensure_ascii=False, default=str).encode("utf-8"))
+    except Exception:  # noqa: BLE001
+        return None
 
 
 class GatewayService:
@@ -48,6 +58,7 @@ class GatewayService:
         audit: AuditLogger,
         bus: NotificationBus,
         profiles: ProfileRegistry,
+        payload: PayloadOptions | None = None,
     ) -> None:
         self.catalog = catalog
         self.publishing = publishing
@@ -57,6 +68,7 @@ class GatewayService:
         self.audit = audit
         self.bus = bus
         self.profiles = profiles
+        self.payload = payload or PayloadOptions()
         self.primitives: dict[str, GatewayPrimitive] = builtin_primitives()
 
     # ------------------------------------------------------------------
@@ -87,11 +99,18 @@ class GatewayService:
         for p in self.primitives.values():
             tools.append(p.as_tool_descriptor())
         for entry in self.publishing.list_published(session, PrimitiveType.TOOL):
+            schema = entry.input_schema or {"type": "object"}
+            if self.payload.slim_tools_list:
+                schema = slim_schema(
+                    schema,
+                    max_desc=self.payload.max_schema_description_chars,
+                    drop_examples=self.payload.drop_schema_examples,
+                )
             tools.append({
                 "name": entry.canonical_name,
                 "title": entry.display_label,
                 "description": entry.short_description,
-                "inputSchema": entry.input_schema or {"type": "object"},
+                "inputSchema": schema,
             })
         return {"tools": tools}
 
@@ -139,9 +158,16 @@ class GatewayService:
 
         t0 = time.perf_counter()
         try:
-            result = await self.adapters.call_tool(entry.server_id, entry.upstream_name, args)
+            result = await self.adapters.call_tool(
+                entry.server_id, entry.upstream_name, args,
+                router_session_id=session.session_id,
+            )
+            result = cap_result_text(result, self.payload.max_result_bytes)
             latency = (time.perf_counter() - t0) * 1000
-            self.audit.tool_called(session.session_id, name, entry.server_id, True, latency)
+            self.audit.tool_called(
+                session.session_id, name, entry.server_id, True, latency,
+                request_bytes=_safe_bytes(args), response_bytes=_safe_bytes(result),
+            )
             return result
         except GatewayError as e:
             latency = (time.perf_counter() - t0) * 1000
@@ -165,7 +191,9 @@ class GatewayService:
         if entry is None:
             raise UnknownPrimitive(canonical)
         entry = self.publishing.require_published(session, entry.canonical_name, PrimitiveType.RESOURCE)
-        return await self.adapters.read_resource(entry.server_id, entry.upstream_name)
+        return await self.adapters.read_resource(
+            entry.server_id, entry.upstream_name, router_session_id=session.session_id,
+        )
 
     async def prompts_get(self, session: Session, params: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(params, dict):
@@ -174,7 +202,10 @@ class GatewayService:
         if not isinstance(name, str):
             raise InvalidParams("prompts/get: name required")
         entry = self.publishing.require_published(session, name, PrimitiveType.PROMPT)
-        return await self.adapters.get_prompt(entry.server_id, entry.upstream_name, params.get("arguments") or {})
+        return await self.adapters.get_prompt(
+            entry.server_id, entry.upstream_name, params.get("arguments") or {},
+            router_session_id=session.session_id,
+        )
 
     # ------------------------------------------------------------------
     async def dispatch(self, session: Session, method: str, params: dict[str, Any] | None) -> Any:

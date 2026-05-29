@@ -150,3 +150,59 @@ The gateway speaks **Streamable HTTP** outward. Internally:
 | Admin UI | already JSON endpoints under `/admin/*` |
 | Caching | wrap adapter `call_tool` with `CachingAdapter` decorator |
 | Result-stream rewriting | `OutputFilter` chain in `GatewayService.call_tool` |
+
+## 12. Upstream session registry
+
+The `AdapterManager` distinguishes two roles per upstream:
+
+- **Control plane** — one long-lived adapter per `server_id`, created at startup.
+  Used for catalog refresh, `list_changed` watching, and — for `shared`
+  upstreams — all tool calls. This is the original MVP behavior.
+- **Data plane** — for upstreams configured `isolation: per_session`, tool
+  calls are routed through a **pooled adapter keyed by
+  `(server_id, router_session_id)`**, created lazily on first use and reused
+  across calls within that router session.
+
+| Concern | Behavior |
+|---|---|
+| Isolation mode | Per-upstream `isolation: shared` (default) or `per_session`. `shared` is best for stdio (avoids subprocess fan-out) and single-tenant; `per_session` isolates multi-tenant HTTP upstreams. |
+| Lazy creation | A pooled session is built (via an adapter factory) on the first routed call for that `(upstream, router_session)`. |
+| Reuse | Subsequent calls in the same router session reuse the pooled adapter (no reconnect). |
+| Eviction | LRU eviction past `session_pool.max_upstream_sessions`; full teardown when the owning router session is closed (`DELETE /mcp`) or GC'd. |
+| Connect resilience | `_connect_with_backoff` retries transient connect failures with exponential backoff + jitter (`connect_max_retries`, `connect_backoff_base_s`, `connect_backoff_max_s`). |
+| Router-session GC | A background loop (`session_pool.gc_interval_s`) evicts router sessions idle past `session_pool.idle_ttl_s`, cascading to their pooled upstream sessions. |
+
+The circuit breaker remains keyed by `server_id` (shared across a server's
+sessions), so one failing upstream trips fast for everyone regardless of mode.
+
+## 13. Payload optimization
+
+To reduce tokens/bytes sent to downstream LLM clients (`util/payload.py`):
+
+- **Slim `tools/list`** — when `payload.slim_tools_list` is enabled, published-tool
+  input schemas pass through `slim_schema`: verbose, model-irrelevant keys
+  (`examples`, `$comment`, …) are dropped and inline descriptions are capped
+  (`payload.max_schema_description_chars`), while the structure needed to *call*
+  the tool (`type`/`properties`/`required`) is preserved. The default `tools/list`
+  and `/admin/catalog` surfaces keep the full (rich) schema.
+  (The catalog allowlist `validate_input_schema` already strips most verbose
+  keys at catalog time; the gateway slim adds a tighter, model-facing cap.)
+- **Compact discovery** — `gateway_discover_catalog` omits null/empty/default
+  fields per entry (no full schemas; argument summaries only).
+- **Result caps** — `cap_result_text` optionally caps heavy `content[].text`
+  blocks (`payload.max_result_bytes`, default `0` = disabled). Truncation is
+  never silent: a marker is appended and `_meta.gateway_truncated` is set.
+
+Discovery can also be **workflow-scoped**: `gateway_discover_catalog` accepts a
+`profile` argument (restricting results to what that profile would enable), and
+`gateway_list_profiles` lets a model browse available bundles before applying
+one with `gateway_use_profile`.
+
+## 14. Metrics / audit hooks
+
+The audit stream (`util/audit.py`) carries operator-facing metrics without a new
+dependency: `tool.call` records `latency_ms` plus `request_bytes`/`response_bytes`;
+`upstream_session.{created,evicted,lru_evicted}` track the per-session pool; and
+`session.evicted` records router-session teardown (with upstream sessions freed).
+Upstream error rate is derivable from `tool.call` `ok=false` events. These are
+the seams a future Prometheus/OpenTelemetry exporter plugs into.

@@ -43,6 +43,16 @@ class GatewayPrimitive:
 # --------------------------------------------------------------------------- #
 
 async def _h_discover_catalog(session: Session, args: dict[str, Any], svc: "GatewayService") -> dict[str, Any]:  # noqa: F821
+    # Optional workflow-scoped discovery: restrict to what a named profile would
+    # enable, so a model can browse just the tools relevant to a workflow.
+    names: set[str] | None = None
+    profile_name = args.get("profile")
+    if profile_name:
+        profile = svc.profiles.get(profile_name)
+        if profile is None:
+            raise ValueError(f"unknown profile: {profile_name}")
+        names = set(profile.resolve(svc.catalog))
+
     entries = svc.catalog.list(
         query=args.get("query"),
         server=args.get("server"),
@@ -52,6 +62,7 @@ async def _h_discover_catalog(session: Session, args: dict[str, Any], svc: "Gate
             PrimitiveType(args["primitive_type"]) if args.get("primitive_type") else None
         ),
         max_risk=args.get("max_risk"),
+        names=names,
         limit=int(args.get("limit", 25)),
         offset=int(args.get("offset", 0)),
     )
@@ -67,20 +78,30 @@ async def _h_discover_catalog(session: Session, args: dict[str, Any], svc: "Gate
 
 
 def _compact_entry(e) -> dict[str, Any]:
-    return {
+    # Always-present, high-signal fields a model needs to pick a tool.
+    out: dict[str, Any] = {
         "name": e.canonical_name,
         "label": e.display_label,
         "server": e.server_id,
         "type": e.primitive_type.value,
         "purpose": e.short_description,
-        "when_to_use": e.usage_guidance,
-        "args": [a.model_dump() for a in e.argument_summary],
-        "tags": e.tags,
-        "categories": e.categories,
         "risk": e.risk_level.value,
-        "requires_approval": e.requires_approval,
-        "requires_auth": e.requires_auth,
     }
+    # Token-saving: omit empty/null/default-false fields rather than emitting
+    # them on every entry. Each arg drops null descriptions too.
+    if e.usage_guidance:
+        out["when_to_use"] = e.usage_guidance
+    if e.argument_summary:
+        out["args"] = [a.model_dump(exclude_none=True) for a in e.argument_summary]
+    if e.tags:
+        out["tags"] = e.tags
+    if e.categories:
+        out["categories"] = e.categories
+    if e.requires_approval:
+        out["requires_approval"] = True
+    if e.requires_auth:
+        out["requires_auth"] = True
+    return out
 
 
 def _summarize_count(entries: list) -> str:
@@ -151,6 +172,22 @@ async def _h_list_servers(session: Session, args: dict[str, Any], svc: "GatewayS
     }
 
 
+async def _h_list_profiles(session: Session, args: dict[str, Any], svc: "GatewayService") -> dict[str, Any]:  # noqa: F821
+    profiles = []
+    for p in svc.profiles.all():
+        names = p.resolve(svc.catalog)
+        profiles.append({
+            "name": p.name,
+            "description": p.description,
+            "enables_count": len(names),
+            "sample": names[:5],
+        })
+    return {
+        "content": [{"type": "text", "text": f"{len(profiles)} profile(s) available."}],
+        "structuredContent": {"profiles": profiles},
+    }
+
+
 async def _h_use_profile(session: Session, args: dict[str, Any], svc: "GatewayService") -> dict[str, Any]:  # noqa: F821
     name = args.get("profile")
     if not isinstance(name, str):
@@ -192,6 +229,7 @@ def builtin_primitives() -> dict[str, GatewayPrimitive]:
                     "tags": {"type": "array", "items": {"type": "string"}},
                     "primitive_type": {"type": "string", "enum": ["tool", "resource", "prompt"]},
                     "max_risk": {"type": "string", "enum": ["low", "medium", "high", "dangerous"]},
+                    "profile": {"type": "string", "description": "Restrict results to what this profile would enable."},
                     "limit": {"type": "integer", "minimum": 1, "maximum": 200},
                     "offset": {"type": "integer", "minimum": 0},
                 },
@@ -244,6 +282,17 @@ def builtin_primitives() -> dict[str, GatewayPrimitive]:
             description="Show each upstream MCP server's id, transport, and health.",
             input_schema={"type": "object", "properties": {}},
             handler=_h_list_servers,
+        ),
+        GatewayPrimitive(
+            name="gateway_list_profiles",
+            title="List profiles",
+            description=(
+                "List the curated capability bundles (profiles) this gateway offers, "
+                "with how many primitives each would enable and a small sample. Use "
+                "this to pick a workflow, then apply it with gateway_use_profile."
+            ),
+            input_schema={"type": "object", "properties": {}},
+            handler=_h_list_profiles,
         ),
         GatewayPrimitive(
             name="gateway_use_profile",

@@ -18,6 +18,19 @@ auth:
 log_level: INFO
 catalog_refresh_interval_s: 300
 
+# Router-session lifecycle + per-session upstream connection pool.
+session_pool:
+  idle_ttl_s: 3600            # idle router sessions GC'd after this many seconds
+  gc_interval_s: 60           # how often the GC sweep runs
+  max_upstream_sessions: 256  # global cap on pooled per_session upstream sessions (LRU)
+
+# Outbound payload trimming toward downstream LLM clients (token reduction).
+payload:
+  slim_tools_list: false           # opt-in: slim published-tool input schemas in tools/list
+  max_schema_description_chars: 160 # cap inline schema descriptions on that surface
+  drop_schema_examples: true       # drop verbose examples/$comment from schemas
+  max_result_bytes: 0              # 0 = never truncate tool results; >0 caps text blocks
+
 policy:
   rate_limit_capacity: 30
   rate_limit_refill_per_sec: 0.5
@@ -42,6 +55,12 @@ upstream_servers:
     default_tags: ["notes"]
     default_categories: ["productivity"]
     requires_auth: true
+    # Isolate upstream sessions per router session (good for multi-tenant HTTP).
+    # Default is "shared" (one upstream session for all router sessions).
+    isolation: per_session
+    connect_max_retries: 3        # retry transient connects with backoff + jitter
+    connect_backoff_base_s: 0.5
+    connect_backoff_max_s: 10.0
 
   # --- 3. legacy HTTP+SSE MCP server ---
   - id: legacy-jira
