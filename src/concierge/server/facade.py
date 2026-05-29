@@ -213,7 +213,7 @@ def build_facade_router(
             await auth.authenticate(request)
         except Unauthorized as e:
             raise HTTPException(status_code=401, detail=e.message)
-        sessions.close(mcp_session_id)
+        await sessions.aclose(mcp_session_id)
         bus.drop(mcp_session_id)
         return Response(status_code=204)
 

@@ -5,6 +5,7 @@ Wires every subsystem together from a GatewayConfig and returns a runnable app.
 """
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -26,6 +27,7 @@ from ..policy.engine import PolicyEngine
 from ..policy.ratelimit import TokenBucketRateLimiter
 from ..util.audit import AuditLogger
 from ..util.log import configure_logging, get_logger
+from ..util.payload import PayloadOptions
 from .admin import build_admin_router
 from .auth import AuthProvider, LocalhostAllowAuth, NoAuth, StaticBearerAuth
 from .facade import build_facade_router
@@ -85,13 +87,25 @@ def build_app(config: GatewayConfig) -> FastAPI:
     # Core subsystems
     catalog = Catalog(InMemoryCatalogStore())
     bus = NotificationBus()
-    sessions = SessionManager()
     publishing = PublishingService(catalog, bus)
     audit = AuditLogger()
 
     adapters = AdapterManager(
         catalog,
         refresh_interval_s=config.catalog_refresh_interval_s,
+        max_upstream_sessions=config.session_pool.max_upstream_sessions,
+        audit=audit,
+    )
+
+    # Tearing down a router session also tears down its pooled upstream sessions,
+    # and records the eviction (and how many upstream sessions it freed).
+    async def _on_session_evict(session_id: str) -> None:
+        freed = await adapters.evict_router_session(session_id)
+        audit.session_evicted(session_id, upstream_sessions_freed=freed)
+
+    sessions = SessionManager(
+        idle_ttl_seconds=config.session_pool.idle_ttl_s,
+        on_evict=_on_session_evict,
     )
     for srv in config.upstream_servers:
         adapter = _build_adapter(srv)
@@ -102,6 +116,13 @@ def build_app(config: GatewayConfig) -> FastAPI:
             default_categories=srv.default_categories,
             requires_auth=srv.requires_auth,
             requires_approval_for=srv.requires_approval_for,
+            isolation=srv.isolation,
+            # Factory mints a fresh adapter for per_session isolation. Bind srv
+            # via default arg so each closure keeps its own upstream config.
+            factory=(lambda s=srv: _build_adapter(s)),
+            connect_max_retries=srv.connect_max_retries,
+            connect_backoff_base_s=srv.connect_backoff_base_s,
+            connect_backoff_max_s=srv.connect_backoff_max_s,
         )
 
     # Profiles
@@ -144,16 +165,33 @@ def build_app(config: GatewayConfig) -> FastAPI:
         audit=audit,
         bus=bus,
         profiles=profile_registry,
+        payload=PayloadOptions(**config.payload.model_dump()),
     )
     auth = _build_auth(config)
+
+    async def _session_gc_loop() -> None:
+        interval = config.session_pool.gc_interval_s
+        try:
+            while True:
+                await asyncio.sleep(interval)
+                try:
+                    n = await sessions.gc()
+                    if n:
+                        _log.info("session gc evicted %d idle session(s)", n)
+                except Exception as e:  # noqa: BLE001
+                    _log.warning("session gc failed: %s", e)
+        except asyncio.CancelledError:
+            return
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
         _log.info("starting upstream adapters: %d configured", len(adapters.all()))
         await adapters.start_all()
+        gc_task = asyncio.create_task(_session_gc_loop(), name="session-gc")
         try:
             yield
         finally:
+            gc_task.cancel()
             await adapters.stop_all()
 
     app = FastAPI(title="Concierge", version="0.1.0", lifespan=lifespan)

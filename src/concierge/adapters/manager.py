@@ -11,8 +11,14 @@ side of the world. Per-session publishing happens elsewhere.
 from __future__ import annotations
 
 import asyncio
+import random
+from collections import OrderedDict
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import TYPE_CHECKING, Any, Callable
+
+if TYPE_CHECKING:
+    from ..util.audit import AuditLogger
 
 from ..core.catalog import Catalog
 from ..core.types import (
@@ -70,6 +76,13 @@ class _CircuitBreaker:
             self._open_until[server_id] = datetime.now(timezone.utc) + self.cooldown
 
 
+@dataclass
+class _PooledSession:
+    """One lazily-created, isolated upstream session for a router session."""
+    adapter: UpstreamAdapter
+    last_used: datetime
+
+
 class AdapterManager:
     def __init__(
         self,
@@ -78,13 +91,22 @@ class AdapterManager:
         refresh_interval_s: float = 300.0,
         circuit_failure_threshold: int = 5,
         circuit_cooldown_s: float = 30.0,
+        max_upstream_sessions: int = 256,
+        audit: "AuditLogger | None" = None,
     ) -> None:
         self.catalog = catalog
         self.refresh_interval_s = refresh_interval_s
+        self.max_upstream_sessions = max_upstream_sessions
+        self._audit = audit
+        # The "control plane" adapter per server: used for catalog refresh,
+        # list_changed watching, and (for shared upstreams) tool calls.
         self._adapters: dict[str, UpstreamAdapter] = {}
         self._meta: dict[str, dict[str, Any]] = {}   # server_id -> {risk_level, tags, ...}
         self._tasks: list[asyncio.Task[Any]] = []
         self._breaker = _CircuitBreaker(circuit_failure_threshold, circuit_cooldown_s)
+        # "Data plane" pool for per_session upstreams, LRU-ordered.
+        self._pool: "OrderedDict[tuple[str, str], _PooledSession]" = OrderedDict()
+        self._pool_lock = asyncio.Lock()
 
     # ------------------------------------------------------------------
     def register(
@@ -96,6 +118,11 @@ class AdapterManager:
         default_categories: list[str] | None = None,
         requires_auth: bool = False,
         requires_approval_for: list[str] | None = None,
+        isolation: str = "shared",
+        factory: Callable[[], UpstreamAdapter] | None = None,
+        connect_max_retries: int = 3,
+        connect_backoff_base_s: float = 0.5,
+        connect_backoff_max_s: float = 10.0,
     ) -> None:
         self._adapters[adapter.server_id] = adapter
         self._meta[adapter.server_id] = {
@@ -104,6 +131,11 @@ class AdapterManager:
             "default_categories": default_categories or [],
             "requires_auth": requires_auth,
             "requires_approval_for": set(requires_approval_for or []),
+            "isolation": isolation,
+            "factory": factory,
+            "connect_max_retries": connect_max_retries,
+            "connect_backoff_base_s": connect_backoff_base_s,
+            "connect_backoff_max_s": connect_backoff_max_s,
         }
 
     def get(self, server_id: str) -> UpstreamAdapter | None:
@@ -128,11 +160,54 @@ class AdapterManager:
         for t in self._tasks:
             t.cancel()
         self._tasks.clear()
+        async with self._pool_lock:
+            for entry in self._pool.values():
+                await self._safe_close(entry.adapter)
+            self._pool.clear()
         for a in self._adapters.values():
             try:
                 await a.close()
             except Exception:  # noqa: BLE001
                 pass
+
+    # ------------------------------------------------------------------
+    @staticmethod
+    async def _safe_close(adapter: UpstreamAdapter) -> None:
+        try:
+            await adapter.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+    async def _connect_with_backoff(
+        self,
+        adapter: UpstreamAdapter,
+        *,
+        max_retries: int,
+        base_s: float,
+        max_s: float,
+    ) -> None:
+        """Connect + initialize an adapter, retrying transient failures with
+        exponential backoff and jitter. Raises the last error if all attempts
+        are exhausted."""
+        attempt = 0
+        while True:
+            try:
+                await adapter.connect()
+                await adapter.initialize()
+                return
+            except GatewayError as e:
+                attempt += 1
+                if attempt > max_retries:
+                    await self._safe_close(adapter)
+                    raise
+                backoff = min(max_s, base_s * (2 ** (attempt - 1)))
+                # Full jitter in [0.5x, 1.0x] of the computed backoff.
+                delay = backoff * (0.5 + random.random() * 0.5)
+                _log.warning(
+                    "connect %s failed (attempt %d/%d), retrying in %.2fs: %s",
+                    adapter.server_id, attempt, max_retries, delay, e,
+                )
+                await asyncio.sleep(delay)
 
     # ------------------------------------------------------------------
     async def _watch_changes(self, adapter: UpstreamAdapter) -> None:
@@ -255,13 +330,89 @@ class AdapterManager:
         )
 
     # ------------------------------------------------------------------
-    async def call_tool(self, server_id: str, upstream_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-        adapter = self._adapters.get(server_id)
-        if adapter is None:
+    # Session registry — resolve the right upstream session for a call.
+    # ------------------------------------------------------------------
+    async def _resolve_session_adapter(
+        self, server_id: str, router_session_id: str | None
+    ) -> UpstreamAdapter:
+        """Return the upstream adapter to use for a data-plane call.
+
+        For ``shared`` upstreams (or when no router session id is given) this is
+        the control-plane adapter. For ``per_session`` upstreams it is a pooled,
+        lazily-created, per-router-session adapter — reused across calls in the
+        same router session and LRU-evicted when the pool is full.
+        """
+        meta = self._meta.get(server_id)
+        if meta is None:
             raise UpstreamUnavailable(f"no adapter for {server_id}")
+
+        factory = meta.get("factory")
+        if meta.get("isolation") != "per_session" or router_session_id is None or factory is None:
+            adapter = self._adapters.get(server_id)
+            if adapter is None:
+                raise UpstreamUnavailable(f"no adapter for {server_id}")
+            return adapter
+
+        key = (server_id, router_session_id)
+        async with self._pool_lock:
+            existing = self._pool.get(key)
+            if existing is not None:
+                existing.last_used = datetime.now(timezone.utc)
+                self._pool.move_to_end(key)
+                return existing.adapter
+
+            adapter = factory()
+            await self._connect_with_backoff(
+                adapter,
+                max_retries=meta["connect_max_retries"],
+                base_s=meta["connect_backoff_base_s"],
+                max_s=meta["connect_backoff_max_s"],
+            )
+            self._pool[key] = _PooledSession(adapter=adapter, last_used=datetime.now(timezone.utc))
+            self._pool.move_to_end(key)
+            if self._audit is not None:
+                self._audit.upstream_session("created", server_id, router_session_id)
+            await self._enforce_pool_cap()
+            return adapter
+
+    async def _enforce_pool_cap(self) -> None:
+        """Evict least-recently-used pooled sessions past the cap.
+        Caller must hold ``self._pool_lock``."""
+        while len(self._pool) > self.max_upstream_sessions:
+            (sid, rsid), victim = self._pool.popitem(last=False)
+            await self._safe_close(victim.adapter)
+            _log.info("evicted LRU upstream session %s/%s", sid, rsid)
+            if self._audit is not None:
+                self._audit.upstream_session("lru_evicted", sid, rsid)
+
+    async def evict_router_session(self, router_session_id: str) -> int:
+        """Tear down all pooled upstream sessions owned by a router session."""
+        async with self._pool_lock:
+            victims = [k for k in self._pool if k[1] == router_session_id]
+            for k in victims:
+                entry = self._pool.pop(k, None)
+                if entry is not None:
+                    await self._safe_close(entry.adapter)
+                    if self._audit is not None:
+                        self._audit.upstream_session("evicted", k[0], k[1])
+        return len(victims)
+
+    def pool_size(self) -> int:
+        return len(self._pool)
+
+    # ------------------------------------------------------------------
+    async def call_tool(
+        self,
+        server_id: str,
+        upstream_name: str,
+        arguments: dict[str, Any],
+        *,
+        router_session_id: str | None = None,
+    ) -> dict[str, Any]:
         if self._breaker.is_open(server_id):
             raise UpstreamCircuitOpen(server_id)
         try:
+            adapter = await self._resolve_session_adapter(server_id, router_session_id)
             result = await adapter.call_tool(upstream_name, arguments)
             self._breaker.record_success(server_id)
             return result
@@ -272,14 +423,19 @@ class AdapterManager:
             # protocol errors don't open the breaker
             raise
 
-    async def read_resource(self, server_id: str, uri: str) -> dict[str, Any]:
-        adapter = self._adapters.get(server_id)
-        if adapter is None:
-            raise UpstreamUnavailable(server_id)
+    async def read_resource(
+        self, server_id: str, uri: str, *, router_session_id: str | None = None
+    ) -> dict[str, Any]:
+        adapter = await self._resolve_session_adapter(server_id, router_session_id)
         return await adapter.read_resource(uri)
 
-    async def get_prompt(self, server_id: str, name: str, arguments: dict[str, Any] | None = None) -> dict[str, Any]:
-        adapter = self._adapters.get(server_id)
-        if adapter is None:
-            raise UpstreamUnavailable(server_id)
+    async def get_prompt(
+        self,
+        server_id: str,
+        name: str,
+        arguments: dict[str, Any] | None = None,
+        *,
+        router_session_id: str | None = None,
+    ) -> dict[str, Any]:
+        adapter = await self._resolve_session_adapter(server_id, router_session_id)
         return await adapter.get_prompt(name, arguments)

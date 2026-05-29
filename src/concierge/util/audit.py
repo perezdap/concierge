@@ -48,6 +48,8 @@ class AuditLogger:
         ok: bool,
         latency_ms: float,
         error_code: int | None = None,
+        request_bytes: int | None = None,
+        response_bytes: int | None = None,
     ) -> None:
         self.emit(
             "tool.call",
@@ -57,6 +59,22 @@ class AuditLogger:
             ok=ok,
             latency_ms=round(latency_ms, 2),
             error_code=error_code,
+            request_bytes=request_bytes,
+            response_bytes=response_bytes,
+        )
+
+    def session_evicted(self, session_id: str, **f: Any) -> None:
+        self.emit("session.evicted", session_id=session_id, **f)
+
+    def upstream_session(
+        self, event: str, server_id: str, router_session_id: str | None = None, **f: Any
+    ) -> None:
+        """event ∈ {created, evicted, lru_evicted} — tracks the per-session pool."""
+        self.emit(
+            f"upstream_session.{event}",
+            server_id=server_id,
+            router_session_id=router_session_id,
+            **f,
         )
 
     def policy_decision(
