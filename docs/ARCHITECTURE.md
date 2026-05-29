@@ -179,11 +179,12 @@ sessions), so one failing upstream trips fast for everyone regardless of mode.
 
 To reduce tokens/bytes sent to downstream LLM clients (`util/payload.py`):
 
-- **Slim `tools/list`** — published-tool input schemas pass through
-  `slim_schema`: verbose, model-irrelevant keys (`examples`, `$comment`, …) are
-  dropped and inline descriptions are capped (`payload.max_schema_description_chars`),
-  while the structure needed to *call* the tool (`type`/`properties`/`required`)
-  is preserved. The `/admin/catalog` surface keeps the full (rich) schema.
+- **Slim `tools/list`** — when `payload.slim_tools_list` is enabled, published-tool
+  input schemas pass through `slim_schema`: verbose, model-irrelevant keys
+  (`examples`, `$comment`, …) are dropped and inline descriptions are capped
+  (`payload.max_schema_description_chars`), while the structure needed to *call*
+  the tool (`type`/`properties`/`required`) is preserved. The default `tools/list`
+  and `/admin/catalog` surfaces keep the full (rich) schema.
   (The catalog allowlist `validate_input_schema` already strips most verbose
   keys at catalog time; the gateway slim adds a tighter, model-facing cap.)
 - **Compact discovery** — `gateway_discover_catalog` omits null/empty/default

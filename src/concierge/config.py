@@ -91,21 +91,21 @@ class PolicyConfig(BaseModel):
 class SessionPoolConfig(BaseModel):
     """Tuning for router-session lifecycle and the per-session upstream pool."""
     # Idle router sessions older than this are garbage-collected.
-    idle_ttl_s: int = 60 * 60
+    idle_ttl_s: int = Field(default=60 * 60, gt=0)
     # How often the background GC sweep runs.
-    gc_interval_s: float = 60.0
+    gc_interval_s: float = Field(default=60.0, gt=0)
     # Global cap on pooled per_session upstream sessions (LRU-evicted past this).
-    max_upstream_sessions: int = 256
+    max_upstream_sessions: int = Field(default=256, gt=0)
 
 
 class PayloadConfig(BaseModel):
     """Controls outbound payload trimming toward downstream LLM clients."""
-    # Slim published-tool input schemas in tools/list (model-facing surface).
-    slim_tools_list: bool = True
-    max_schema_description_chars: int = 160
+    # Slim published-tool input schemas in tools/list (model-facing surface). Opt-in for compatibility.
+    slim_tools_list: bool = False
+    max_schema_description_chars: int = Field(default=160, ge=0)
     drop_schema_examples: bool = True
     # Cap heavy tool-result text (bytes). 0 = disabled (never truncate silently).
-    max_result_bytes: int = 0
+    max_result_bytes: int = Field(default=0, ge=0)
 
 
 class GatewayConfig(BaseModel):

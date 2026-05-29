@@ -26,7 +26,7 @@ session_pool:
 
 # Outbound payload trimming toward downstream LLM clients (token reduction).
 payload:
-  slim_tools_list: true            # slim published-tool input schemas in tools/list
+  slim_tools_list: false           # opt-in: slim published-tool input schemas in tools/list
   max_schema_description_chars: 160 # cap inline schema descriptions on that surface
   drop_schema_examples: true       # drop verbose examples/$comment from schemas
   max_result_bytes: 0              # 0 = never truncate tool results; >0 caps text blocks

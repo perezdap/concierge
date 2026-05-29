@@ -44,6 +44,8 @@ class SessionManager:
         return s
 
     def close(self, session_id: str) -> None:
+        if session_id in self._sessions and self._on_evict is not None:
+            raise RuntimeError("SessionManager.close() cannot run async eviction hooks; use aclose()")
         self._sessions.pop(session_id, None)
 
     async def aclose(self, session_id: str) -> None:

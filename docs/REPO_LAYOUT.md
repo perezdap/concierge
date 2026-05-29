@@ -93,7 +93,7 @@ Beyond the MVP fields, optimization adds:
 
 | Field | Default | Purpose |
 |---|---|---|
-| `slim_tools_list` | `true` | Slim published-tool schemas on the model-facing `tools/list`. |
+| `slim_tools_list` | `false` | Opt-in: slim published-tool schemas on the model-facing `tools/list`. |
 | `max_schema_description_chars` | `160` | Cap inline schema descriptions there. |
 | `drop_schema_examples` | `true` | Drop verbose `examples`/`$comment` from schemas. |
 | `max_result_bytes` | `0` | Cap heavy result text (`0` = never truncate). |

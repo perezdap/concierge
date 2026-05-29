@@ -153,8 +153,19 @@ async def _build_service(payload: PayloadOptions | None = None) -> GatewayServic
 # tools/list surface — that tighter cap is the observable difference below.
 
 @pytest.mark.asyncio
-async def test_tools_list_slims_published_schema_by_default():
+async def test_tools_list_preserves_published_schema_by_default():
     svc = await _build_service()
+    s = await svc.sessions.create()
+    await svc.tools_call(s, {"name": "gateway_enable_tools", "arguments": {"names": ["demo.search"]}})
+    res = await svc.tools_list(s)
+    tool = next(t for t in res["tools"] if t["name"] == "demo.search")
+    # without opt-in gateway slimming the catalog-level description (500) is preserved
+    assert len(tool["inputSchema"]["properties"]["query"]["description"]) == 500
+
+
+@pytest.mark.asyncio
+async def test_tools_list_slims_published_schema_when_enabled():
+    svc = await _build_service(PayloadOptions(slim_tools_list=True))
     s = await svc.sessions.create()
     await svc.tools_call(s, {"name": "gateway_enable_tools", "arguments": {"names": ["demo.search"]}})
     res = await svc.tools_list(s)
@@ -166,17 +177,6 @@ async def test_tools_list_slims_published_schema_by_default():
     # still callable: required + property types intact
     assert schema["required"] == ["query"]
     assert schema["properties"]["query"]["type"] == "string"
-
-
-@pytest.mark.asyncio
-async def test_tools_list_slim_can_be_disabled():
-    svc = await _build_service(PayloadOptions(slim_tools_list=False))
-    s = await svc.sessions.create()
-    await svc.tools_call(s, {"name": "gateway_enable_tools", "arguments": {"names": ["demo.search"]}})
-    res = await svc.tools_list(s)
-    tool = next(t for t in res["tools"] if t["name"] == "demo.search")
-    # without gateway slimming the catalog-level description (500) is preserved
-    assert len(tool["inputSchema"]["properties"]["query"]["description"]) == 500
 
 
 @pytest.mark.asyncio

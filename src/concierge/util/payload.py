@@ -25,7 +25,8 @@ _VERBOSE_SCHEMA_KEYS = ("examples", "example", "$comment", "$schema")
 @dataclass
 class PayloadOptions:
     """Knobs controlling how the gateway slims outbound payloads."""
-    slim_tools_list: bool = True
+    # Opt-in for compatibility: default tools/list preserves catalog schemas.
+    slim_tools_list: bool = False
     max_schema_description_chars: int = 160
     drop_schema_examples: bool = True
     # 0 disables the result text cap (default — never truncate by surprise).

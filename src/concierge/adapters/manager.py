@@ -106,6 +106,7 @@ class AdapterManager:
         self._breaker = _CircuitBreaker(circuit_failure_threshold, circuit_cooldown_s)
         # "Data plane" pool for per_session upstreams, LRU-ordered.
         self._pool: "OrderedDict[tuple[str, str], _PooledSession]" = OrderedDict()
+        self._pool_pending: dict[tuple[str, str], asyncio.Task[UpstreamAdapter]] = {}
         self._pool_lock = asyncio.Lock()
 
     # ------------------------------------------------------------------
@@ -161,9 +162,16 @@ class AdapterManager:
             t.cancel()
         self._tasks.clear()
         async with self._pool_lock:
-            for entry in self._pool.values():
-                await self._safe_close(entry.adapter)
+            pending = list(self._pool_pending.values())
+            self._pool_pending.clear()
+            pooled = [entry.adapter for entry in self._pool.values()]
             self._pool.clear()
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+        for adapter in pooled:
+            await self._safe_close(adapter)
         for a in self._adapters.values():
             try:
                 await a.close()
@@ -361,40 +369,129 @@ class AdapterManager:
                 self._pool.move_to_end(key)
                 return existing.adapter
 
-            adapter = factory()
+            pending = self._pool_pending.get(key)
+            if pending is None:
+                adapter = factory()
+                pending = asyncio.create_task(
+                    self._create_pooled_session_adapter(key, adapter, meta),
+                    name=f"connect-{server_id}-{router_session_id}",
+                )
+                self._pool_pending[key] = pending
+                pending.add_done_callback(
+                    lambda task, pending_key=key: asyncio.create_task(
+                        self._forget_pending_session(pending_key, task)
+                    )
+                )
+
+        return await asyncio.shield(pending)
+
+    async def _forget_pending_session(
+        self,
+        key: tuple[str, str],
+        task: asyncio.Task[UpstreamAdapter],
+    ) -> None:
+        async with self._pool_lock:
+            if self._pool_pending.get(key) is task:
+                self._pool_pending.pop(key, None)
+
+    async def _create_pooled_session_adapter(
+        self,
+        key: tuple[str, str],
+        adapter: UpstreamAdapter,
+        meta: dict[str, Any],
+    ) -> UpstreamAdapter:
+        """Connect a pooled adapter without holding the global pool lock."""
+        server_id, router_session_id = key
+        adapter_transferred = False
+        adapter_to_close: UpstreamAdapter | None = None
+        victims: list[tuple[str, str, UpstreamAdapter]] = []
+        try:
             await self._connect_with_backoff(
                 adapter,
                 max_retries=meta["connect_max_retries"],
                 base_s=meta["connect_backoff_base_s"],
                 max_s=meta["connect_backoff_max_s"],
             )
-            self._pool[key] = _PooledSession(adapter=adapter, last_used=datetime.now(timezone.utc))
-            self._pool.move_to_end(key)
-            if self._audit is not None:
-                self._audit.upstream_session("created", server_id, router_session_id)
-            await self._enforce_pool_cap()
-            return adapter
 
-    async def _enforce_pool_cap(self) -> None:
-        """Evict least-recently-used pooled sessions past the cap.
-        Caller must hold ``self._pool_lock``."""
+            result = adapter
+            async with self._pool_lock:
+                existing = self._pool.get(key)
+                if existing is not None:
+                    existing.last_used = datetime.now(timezone.utc)
+                    self._pool.move_to_end(key)
+                    adapter_to_close = adapter
+                    result = existing.adapter
+                else:
+                    self._pool[key] = _PooledSession(adapter=adapter, last_used=datetime.now(timezone.utc))
+                    adapter_transferred = True
+                    self._pool.move_to_end(key)
+                    if self._audit is not None:
+                        self._audit.upstream_session("created", server_id, router_session_id)
+                    victims = self._pop_lru_over_cap_locked()
+
+            if adapter_to_close is not None:
+                await self._safe_close(adapter_to_close)
+                adapter_to_close = None
+            await self._close_lru_victims(victims)
+            victims = []
+            return result
+        except asyncio.CancelledError:
+            if adapter_to_close is not None:
+                await self._safe_close(adapter_to_close)
+            if not adapter_transferred:
+                await self._safe_close(adapter)
+            await self._close_lru_victims(victims)
+            raise
+        except Exception:
+            if adapter_to_close is not None:
+                await self._safe_close(adapter_to_close)
+            if not adapter_transferred:
+                await self._safe_close(adapter)
+            await self._close_lru_victims(victims)
+            raise
+
+    def _pop_lru_over_cap_locked(self) -> list[tuple[str, str, UpstreamAdapter]]:
+        """Remove LRU pooled sessions past the cap. Caller must hold the pool lock."""
+        victims: list[tuple[str, str, UpstreamAdapter]] = []
         while len(self._pool) > self.max_upstream_sessions:
             (sid, rsid), victim = self._pool.popitem(last=False)
-            await self._safe_close(victim.adapter)
+            victims.append((sid, rsid, victim.adapter))
+        return victims
+
+    async def _close_lru_victims(self, victims: list[tuple[str, str, UpstreamAdapter]]) -> None:
+        for sid, rsid, adapter in victims:
+            await self._safe_close(adapter)
             _log.info("evicted LRU upstream session %s/%s", sid, rsid)
             if self._audit is not None:
                 self._audit.upstream_session("lru_evicted", sid, rsid)
 
+    async def _enforce_pool_cap(self) -> None:
+        """Evict least-recently-used pooled sessions past the cap."""
+        async with self._pool_lock:
+            victims = self._pop_lru_over_cap_locked()
+        await self._close_lru_victims(victims)
+
     async def evict_router_session(self, router_session_id: str) -> int:
         """Tear down all pooled upstream sessions owned by a router session."""
         async with self._pool_lock:
-            victims = [k for k in self._pool if k[1] == router_session_id]
-            for k in victims:
+            victim_keys = [k for k in self._pool if k[1] == router_session_id]
+            victims: list[tuple[str, str, UpstreamAdapter]] = []
+            for k in victim_keys:
                 entry = self._pool.pop(k, None)
                 if entry is not None:
-                    await self._safe_close(entry.adapter)
-                    if self._audit is not None:
-                        self._audit.upstream_session("evicted", k[0], k[1])
+                    victims.append((k[0], k[1], entry.adapter))
+            pending_keys = [k for k in self._pool_pending if k[1] == router_session_id]
+            pending = [self._pool_pending.pop(k) for k in pending_keys]
+
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+
+        for sid, rsid, adapter in victims:
+            await self._safe_close(adapter)
+            if self._audit is not None:
+                self._audit.upstream_session("evicted", sid, rsid)
         return len(victims)
 
     def pool_size(self) -> int:

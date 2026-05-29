@@ -1,4 +1,5 @@
 """Phase 1 — upstream session registry, pooling, eviction, and backoff."""
+import asyncio
 from typing import Any
 
 import pytest
@@ -56,6 +57,36 @@ class FakeAdapter(UpstreamAdapter):
 
     def health(self) -> AdapterHealth:
         return AdapterHealth(server_id=self.server_id, transport=self.transport, connected=self._connected)
+
+
+class BlockingConnectAdapter(FakeAdapter):
+    def __init__(
+        self,
+        server_id: str,
+        *,
+        started: asyncio.Event,
+        release: asyncio.Event,
+    ) -> None:
+        super().__init__(server_id)
+        self.started = started
+        self.release = release
+
+    async def connect(self) -> None:
+        self.connect_attempts += 1
+        self.started.set()
+        await self.release.wait()
+        self._connected = True
+
+
+class SignalingInitializeAdapter(FakeAdapter):
+    def __init__(self, server_id: str, *, initialized: asyncio.Event) -> None:
+        super().__init__(server_id)
+        self.initialized = initialized
+
+    async def initialize(self) -> dict[str, Any]:
+        self.initialized.set()
+        await asyncio.sleep(0)
+        return {}
 
 
 def _make_tracking_factory():
@@ -181,6 +212,86 @@ async def test_connect_backoff_gives_up_after_max_retries():
 
 
 @pytest.mark.asyncio
+async def test_pending_connect_does_not_block_unrelated_session_creation():
+    adapters = AdapterManager(Catalog())
+    started = asyncio.Event()
+    release = asyncio.Event()
+    made: list[FakeAdapter] = []
+
+    def factory():
+        if not made:
+            adapter = BlockingConnectAdapter("demo", started=started, release=release)
+        else:
+            adapter = FakeAdapter("demo")
+        made.append(adapter)
+        return adapter
+
+    adapters.register(FakeAdapter("demo"), isolation="per_session", factory=factory)
+
+    first = asyncio.create_task(adapters.call_tool("demo", "ping", {}, router_session_id="s1"))
+    await started.wait()
+
+    second = await asyncio.wait_for(
+        adapters.call_tool("demo", "ping", {}, router_session_id="s2"),
+        timeout=0.1,
+    )
+    assert second["content"][0]["text"].startswith("ok:")
+
+    release.set()
+    await first
+    assert len(made) == 2
+
+
+@pytest.mark.asyncio
+async def test_evict_router_session_cancels_pending_connect_without_blocking():
+    adapters = AdapterManager(Catalog())
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    def factory():
+        return BlockingConnectAdapter("demo", started=started, release=release)
+
+    adapters.register(FakeAdapter("demo"), isolation="per_session", factory=factory)
+
+    call = asyncio.create_task(adapters.call_tool("demo", "ping", {}, router_session_id="s1"))
+    await started.wait()
+
+    freed = await asyncio.wait_for(adapters.evict_router_session("s1"), timeout=0.1)
+    assert freed == 0
+    with pytest.raises(asyncio.CancelledError):
+        await call
+
+
+@pytest.mark.asyncio
+async def test_cancelled_pending_publish_closes_connected_adapter():
+    adapters = AdapterManager(Catalog())
+    initialized = asyncio.Event()
+    made: list[SignalingInitializeAdapter] = []
+
+    def factory():
+        adapter = SignalingInitializeAdapter("demo", initialized=initialized)
+        made.append(adapter)
+        return adapter
+
+    adapters.register(FakeAdapter("demo"), isolation="per_session", factory=factory)
+
+    call = asyncio.create_task(adapters.call_tool("demo", "ping", {}, router_session_id="s1"))
+    await initialized.wait()
+    await adapters._pool_lock.acquire()
+    try:
+        await asyncio.sleep(0)
+        pending = next(iter(adapters._pool_pending.values()))
+        pending.cancel()
+    finally:
+        adapters._pool_lock.release()
+
+    with pytest.raises(asyncio.CancelledError):
+        await call
+    assert made[0].closed is True
+    assert adapters.pool_size() == 0
+
+
+@pytest.mark.asyncio
 async def test_session_gc_invokes_on_evict():
     evicted: list[str] = []
 
@@ -209,3 +320,16 @@ async def test_aclose_invokes_on_evict_once():
     await sm.aclose(s.session_id)        # idempotent — no second fire
     await sm.aclose("does-not-exist")    # unknown — no fire
     assert evicted == [s.session_id]
+
+
+@pytest.mark.asyncio
+async def test_sync_close_rejects_async_eviction_hook():
+    async def on_evict(sid: str) -> None:
+        raise AssertionError("should not be called")
+
+    sm = SessionManager(on_evict=on_evict)
+    s = await sm.create()
+
+    with pytest.raises(RuntimeError, match="aclose"):
+        sm.close(s.session_id)
+    assert sm.get(s.session_id) is not None
