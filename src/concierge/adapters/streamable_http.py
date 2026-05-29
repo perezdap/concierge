@@ -116,17 +116,38 @@ class StreamableHttpAdapter(UpstreamAdapter):
         return unwrap_result(payload)
 
     @staticmethod
-    async def _read_first_sse_message(resp: httpx.Response) -> dict[str, Any]:
+    async def _iter_sse_data(resp: httpx.Response) -> AsyncIterator[str]:
+        """Yield each SSE ``data:`` payload, buffering across network chunks.
+
+        Server-sent events are newline-delimited, but a single ``data:`` line can
+        arrive split across multiple HTTP/TCP chunks. We accumulate partial lines
+        and only emit a payload once its terminating newline has been seen, so a
+        JSON message split mid-line is reassembled correctly instead of dropped.
+        """
+        buffer = ""
         async for chunk in resp.aiter_text():
-            for line in chunk.splitlines():
+            buffer += chunk
+            while "\n" in buffer:
+                line, buffer = buffer.split("\n", 1)
+                line = line.rstrip("\r")
                 if line.startswith("data:"):
-                    raw = line[len("data:"):].strip()
-                    if not raw:
-                        continue
-                    try:
-                        return json.loads(raw)
-                    except json.JSONDecodeError:
-                        continue
+                    payload = line[len("data:"):].strip()
+                    if payload:
+                        yield payload
+        # Flush a trailing data line that arrived without a terminating newline.
+        tail = buffer.rstrip("\r\n")
+        if tail.startswith("data:"):
+            payload = tail[len("data:"):].strip()
+            if payload:
+                yield payload
+
+    @staticmethod
+    async def _read_first_sse_message(resp: httpx.Response) -> dict[str, Any]:
+        async for payload in StreamableHttpAdapter._iter_sse_data(resp):
+            try:
+                return json.loads(payload)
+            except json.JSONDecodeError:
+                continue
         raise UpstreamProtocolError("empty SSE response")
 
     async def _post_notification(self, method: str, params: dict[str, Any] | None = None) -> None:
@@ -148,24 +169,18 @@ class StreamableHttpAdapter(UpstreamAdapter):
             async with self._client.stream("GET", self.url, headers=self._headers()) as resp:
                 if resp.status_code >= 400:
                     return
-                async for chunk in resp.aiter_text():
-                    for line in chunk.splitlines():
-                        if not line.startswith("data:"):
-                            continue
-                        raw = line[len("data:"):].strip()
-                        if not raw:
-                            continue
-                        try:
-                            msg = json.loads(raw)
-                        except json.JSONDecodeError:
-                            continue
-                        method = msg.get("method")
-                        if method == "notifications/tools/list_changed":
-                            self._change_q.put_nowait("tools")
-                        elif method == "notifications/resources/list_changed":
-                            self._change_q.put_nowait("resources")
-                        elif method == "notifications/prompts/list_changed":
-                            self._change_q.put_nowait("prompts")
+                async for payload in self._iter_sse_data(resp):
+                    try:
+                        msg = json.loads(payload)
+                    except json.JSONDecodeError:
+                        continue
+                    method = msg.get("method")
+                    if method == "notifications/tools/list_changed":
+                        self._change_q.put_nowait("tools")
+                    elif method == "notifications/resources/list_changed":
+                        self._change_q.put_nowait("resources")
+                    elif method == "notifications/prompts/list_changed":
+                        self._change_q.put_nowait("prompts")
         except (asyncio.CancelledError, httpx.HTTPError):
             return
         except Exception as e:  # noqa: BLE001
