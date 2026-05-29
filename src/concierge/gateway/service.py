@@ -82,6 +82,7 @@ class GatewayService:
             client=session.client_info.get("name"),
             protocol=session.protocol_version,
         )
+        self._apply_auto_profiles(session)
         return {
             "protocolVersion": PROTOCOL_VERSION,
             "serverInfo": {"name": "concierge", "version": "0.1.0"},
@@ -92,6 +93,20 @@ class GatewayService:
                 "logging": {},
             },
         }
+
+    def _apply_auto_profiles(self, session: Session) -> None:
+        """Publish auto_apply profiles' tools at session init.
+
+        This makes proxied tools present in the very first tools/list, so clients
+        that don't react to notifications/tools/list_changed can still reach them.
+        """
+        for profile in self.profiles.auto_apply_profiles():
+            names = profile.resolve(self.catalog)
+            enabled, _ = self.publishing.enable(session, names, by=f"profile:{profile.name}")
+            if profile.name not in session.active_profiles:
+                session.active_profiles.append(profile.name)
+            if enabled:
+                self.audit.tool_enabled(session.session_id, enabled, by=f"profile:{profile.name}")
 
     async def tools_list(self, session: Session) -> dict[str, Any]:
         # Always include gateway-native primitives, then add per-session published tools.

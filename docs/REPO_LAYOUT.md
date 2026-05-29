@@ -99,6 +99,12 @@ Beyond the MVP fields, optimization adds:
 | `drop_schema_examples` | `true` | Drop verbose `examples`/`$comment` from schemas. |
 | `max_result_bytes` | `0` | Cap heavy result text (`0` = never truncate). |
 
+**Per profile (`profiles[]`)**
+
+| Field | Default | Purpose |
+|---|---|---|
+| `auto_apply` | `false` | Opt-in: publish this profile's tools at session init so they appear in the first `tools/list` — for clients that don't react to `notifications/tools/list_changed`. |
+
 ## Running the tests
 
 Set up a virtual environment first (see the **Setup** section in the top-level

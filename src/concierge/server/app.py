@@ -131,6 +131,7 @@ def build_app(config: GatewayConfig) -> FastAPI:
         profile_registry.register(Profile(
             name=pcfg.name,
             description=pcfg.description,
+            auto_apply=pcfg.auto_apply,
             selectors=[
                 ProfileSelector(
                     server=s.server,

@@ -56,7 +56,7 @@ class MultiToolAdapter(UpstreamAdapter):
         return AdapterHealth(server_id=self.server_id, transport=self.transport, connected=True)
 
 
-async def _svc() -> GatewayService:
+async def _svc(*, auto_apply_readonly: bool = False) -> GatewayService:
     catalog = Catalog()
     bus = NotificationBus(coalesce_window_s=0)
     sessions = SessionManager()
@@ -75,6 +75,7 @@ async def _svc() -> GatewayService:
     profiles.register(Profile(
         name="readonly", description="Read tools only.",
         selectors=[ProfileSelector(tags=["read"])],
+        auto_apply=auto_apply_readonly,
     ))
     return GatewayService(catalog, publishing, sessions, adapters, policy, audit, bus, profiles)
 
@@ -155,3 +156,40 @@ async def test_rapid_enable_disable_coalesces_to_one():
     publishing.enable(s, ["demo.alpha"])
     publishing.disable(s, ["demo.alpha"])   # rapid tools mutation
     assert bus.queue_for(s.session_id).qsize() == 1
+
+
+# --------------------------------------------------------------------------- #
+# auto_apply profiles — published at session init
+# --------------------------------------------------------------------------- #
+
+@pytest.mark.asyncio
+async def test_auto_apply_profile_published_in_first_tools_list():
+    svc = await _svc(auto_apply_readonly=True)
+    s = await svc.sessions.create()
+    await svc.initialize(s, {})
+
+    names = [t["name"] for t in (await svc.tools_list(s))["tools"]]
+    assert "demo.alpha" in names        # read tool auto-published at init
+    assert "demo.beta" not in names     # write tool excluded by the profile
+    assert "readonly" in s.active_profiles
+
+
+@pytest.mark.asyncio
+async def test_auto_applied_tool_is_callable_without_manual_enable():
+    svc = await _svc(auto_apply_readonly=True)
+    s = await svc.sessions.create()
+    await svc.initialize(s, {})
+    # No gateway_enable_tools call — the auto profile already published it.
+    res = await svc.tools_call(s, {"name": "demo.alpha", "arguments": {}})
+    assert res == {"content": []}
+
+
+@pytest.mark.asyncio
+async def test_non_auto_profile_does_not_publish_at_init():
+    svc = await _svc(auto_apply_readonly=False)
+    s = await svc.sessions.create()
+    await svc.initialize(s, {})
+
+    names = [t["name"] for t in (await svc.tools_list(s))["tools"]]
+    assert "demo.alpha" not in names    # nothing auto-published
+    assert s.active_profiles == []

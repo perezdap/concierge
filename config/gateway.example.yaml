@@ -84,6 +84,9 @@ upstream_servers:
 profiles:
   - name: demo-echo
     description: "Just the echo upstream."
+    # Published at session init so the echo tools appear in the first tools/list
+    # even for clients that don't react to notifications/tools/list_changed.
+    auto_apply: true
     selectors:
       - server: echo
 

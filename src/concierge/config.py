@@ -80,6 +80,10 @@ class ProfileConfig(BaseModel):
     name: str
     description: str = ""
     selectors: list[ProfileSelectorConfig] = Field(default_factory=list)
+    # Publish this profile's tools automatically at session init, so they appear
+    # in the very first tools/list. Lets clients that don't react to
+    # notifications/tools/list_changed still reach the proxied tools. Opt-in.
+    auto_apply: bool = False
 
 
 class PolicyConfig(BaseModel):
