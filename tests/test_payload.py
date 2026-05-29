@@ -156,9 +156,9 @@ async def _build_service(payload: PayloadOptions | None = None) -> GatewayServic
 async def test_tools_list_preserves_published_schema_by_default():
     svc = await _build_service()
     s = await svc.sessions.create()
-    await svc.tools_call(s, {"name": "gateway_enable_tools", "arguments": {"names": ["demo.search"]}})
+    await svc.tools_call(s, {"name": "gateway_enable_tools", "arguments": {"names": ["demo__search"]}})
     res = await svc.tools_list(s)
-    tool = next(t for t in res["tools"] if t["name"] == "demo.search")
+    tool = next(t for t in res["tools"] if t["name"] == "demo__search")
     # without opt-in gateway slimming the catalog-level description (500) is preserved
     assert len(tool["inputSchema"]["properties"]["query"]["description"]) == 500
 
@@ -167,10 +167,10 @@ async def test_tools_list_preserves_published_schema_by_default():
 async def test_tools_list_slims_published_schema_when_enabled():
     svc = await _build_service(PayloadOptions(slim_tools_list=True))
     s = await svc.sessions.create()
-    await svc.tools_call(s, {"name": "gateway_enable_tools", "arguments": {"names": ["demo.search"]}})
+    await svc.tools_call(s, {"name": "gateway_enable_tools", "arguments": {"names": ["demo__search"]}})
     res = await svc.tools_list(s)
 
-    tool = next(t for t in res["tools"] if t["name"] == "demo.search")
+    tool = next(t for t in res["tools"] if t["name"] == "demo__search")
     schema = tool["inputSchema"]
     desc = schema["properties"]["query"]["description"]
     assert len(desc) <= 161 and desc.endswith("…")     # tightened to 160
@@ -184,7 +184,7 @@ async def test_discovery_omits_null_and_empty_fields():
     svc = await _build_service()
     s = await svc.sessions.create()
     res = await svc.tools_call(s, {"name": "gateway_discover_catalog", "arguments": {}})
-    entry = next(e for e in res["structuredContent"]["entries"] if e["name"] == "demo.search")
+    entry = next(e for e in res["structuredContent"]["entries"] if e["name"] == "demo__search")
     # usage_guidance is None upstream -> key omitted entirely
     assert "when_to_use" not in entry
     # default-false safety flags omitted

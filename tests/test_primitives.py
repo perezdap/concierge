@@ -85,8 +85,8 @@ async def test_initial_tools_list_is_small(svc):
     s = await svc.sessions.create()
     res = await svc.tools_list(s)
     names = [t["name"] for t in res["tools"]]
-    # Only the gateway-native primitives — no demo.ping yet.
-    assert "demo.ping" not in names
+    # Only the gateway-native primitives — no demo__ping yet.
+    assert "demo__ping" not in names
     assert "gateway_discover_catalog" in names
     assert "gateway_enable_tools" in names
 
@@ -98,19 +98,19 @@ async def test_discover_then_enable_then_call(svc):
     res = await svc.tools_call(s, {"name": "gateway_discover_catalog", "arguments": {}})
     entries = res["structuredContent"]["entries"]
     names = [e["name"] for e in entries]
-    assert "demo.ping" in names
+    assert "demo__ping" in names
 
     # enable
-    res = await svc.tools_call(s, {"name": "gateway_enable_tools", "arguments": {"names": ["demo.ping"]}})
-    assert res["structuredContent"]["enabled"] == ["demo.ping"]
+    res = await svc.tools_call(s, {"name": "gateway_enable_tools", "arguments": {"names": ["demo__ping"]}})
+    assert res["structuredContent"]["enabled"] == ["demo__ping"]
 
-    # tools/list now includes demo.ping
+    # tools/list now includes demo__ping
     res = await svc.tools_list(s)
     names = [t["name"] for t in res["tools"]]
-    assert "demo.ping" in names
+    assert "demo__ping" in names
 
     # call_tool routes to the fake adapter
-    res = await svc.tools_call(s, {"name": "demo.ping", "arguments": {"msg": "hi"}})
+    res = await svc.tools_call(s, {"name": "demo__ping", "arguments": {"msg": "hi"}})
     assert res["content"][0]["text"] == "pong:hi"
 
 
@@ -119,20 +119,20 @@ async def test_call_not_published_raises(svc):
     from concierge.errors import NotPublished
     s = await svc.sessions.create()
     with pytest.raises(NotPublished):
-        await svc.tools_call(s, {"name": "demo.ping", "arguments": {}})
+        await svc.tools_call(s, {"name": "demo__ping", "arguments": {}})
 
 
 @pytest.mark.asyncio
 async def test_profile_enables_bundle(svc):
     s = await svc.sessions.create()
     res = await svc.tools_call(s, {"name": "gateway_use_profile", "arguments": {"profile": "demo-all"}})
-    assert "demo.ping" in res["structuredContent"]["enabled"]
+    assert "demo__ping" in res["structuredContent"]["enabled"]
     assert "demo-all" in s.active_profiles
 
 
 @pytest.mark.asyncio
 async def test_list_changed_notification_fired_on_enable(svc):
     s = await svc.sessions.create()
-    await svc.tools_call(s, {"name": "gateway_enable_tools", "arguments": {"names": ["demo.ping"]}})
+    await svc.tools_call(s, {"name": "gateway_enable_tools", "arguments": {"names": ["demo__ping"]}})
     msg = await asyncio.wait_for(svc.bus.queue_for(s.session_id).get(), timeout=1)
     assert msg["method"] == "notifications/tools/list_changed"

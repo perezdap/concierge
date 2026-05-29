@@ -8,8 +8,8 @@ Walks through:
     3. tools/call gateway_discover_catalog
     4. tools/call gateway_enable_tools
     5. (optional) listen for notifications/tools/list_changed on GET /mcp
-    6. tools/list (now shows the enabled echo.echo)
-    7. tools/call echo.echo
+    6. tools/list (now shows the enabled echo__echo)
+    7. tools/call echo__echo
     8. tools/call gateway_disable_tools
 
 Run the gateway first:
@@ -93,17 +93,17 @@ async def main() -> None:
             return await listen_one(client, session_id, timeout=2.0)
         listener = asyncio.create_task(_listen())
 
-        # 6. tools/list now includes echo.echo
+        # 6. tools/list now includes echo__echo
         _, body = await rpc(client, "tools/list", session_id=session_id)
         names = [t["name"] for t in body["result"]["tools"]]
         print("\npost-enable tools/list:", names)
 
         # 7. invoke the upstream tool through the gateway
         _, body = await rpc(client, "tools/call", {
-            "name": "echo.echo",
+            "name": "echo__echo",
             "arguments": {"text": "hello from gateway"},
         }, session_id=session_id)
-        print("\necho.echo result:", body["result"])
+        print("\necho__echo result:", body["result"])
 
         # 8. disable everything
         _, body = await rpc(client, "tools/call", {

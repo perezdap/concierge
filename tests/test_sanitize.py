@@ -26,7 +26,15 @@ def test_sanitize_primitive_name_replaces_unsafe_chars():
 
 
 def test_make_canonical_name_format():
-    assert make_canonical_name("github", "search_repos") == "github.search_repos"
+    assert make_canonical_name("github", "search_repos") == "github__search_repos"
+
+
+def test_canonical_name_matches_function_call_charset():
+    # Tool names exposed to function-calling clients must be ^[a-zA-Z0-9_-]+$;
+    # a dotted delimiter is not allowed and gets mangled by many MCP clients.
+    import re
+    name = make_canonical_name("github", "search_repos")
+    assert re.fullmatch(r"[a-zA-Z0-9_-]+", name)
 
 
 def test_validate_input_schema_drops_unknown_types():

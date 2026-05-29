@@ -82,8 +82,8 @@ async def test_tool_call_records_payload_sizes():
         audit, publishing.bus, ProfileRegistry(),
     )
     s = await svc.sessions.create()
-    await svc.tools_call(s, {"name": "gateway_enable_tools", "arguments": {"names": ["demo.echo"]}})
-    await svc.tools_call(s, {"name": "demo.echo", "arguments": {"text": "hello"}})
+    await svc.tools_call(s, {"name": "gateway_enable_tools", "arguments": {"names": ["demo__echo"]}})
+    await svc.tools_call(s, {"name": "demo__echo", "arguments": {"text": "hello"}})
 
     calls = audit.of("tool.call")
     assert len(calls) == 1
