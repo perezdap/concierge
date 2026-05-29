@@ -101,6 +101,9 @@ Beyond the MVP fields, optimization adds:
 
 ## Running the tests
 
+Set up a virtual environment first (see the **Setup** section in the top-level
+`README.md`), then `pip install -e ".[test]"` inside it.
+
 `pyproject.toml` sets `pythonpath = ["src"]`, so `pytest -q` works from the repo
 root without an editable install. To run the server module directly
 (`python -m concierge ...`) either `pip install -e .` or set `PYTHONPATH=src`.
