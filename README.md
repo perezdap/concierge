@@ -1,0 +1,84 @@
+# Concierge
+
+A brokered, session-scoped capability router for MCP.
+
+It exposes a single remote MCP endpoint (Streamable HTTP) to downstream
+clients, while fanning out internally to many upstream MCP servers across
+heterogeneous transports (stdio, Streamable HTTP, legacy HTTP+SSE, custom).
+
+The gateway **catalogs everything** but **publishes little by default**.
+Downstream clients discover capabilities through a compact `gateway_discover_catalog`
+primitive and enable a curated subset per session. Active tools mutate at
+runtime via `notifications/tools/list_changed`.
+
+## What you get
+
+- One outward `/mcp` endpoint, Streamable HTTP.
+- Adapters for stdio, Streamable HTTP, and legacy HTTP+SSE upstreams (plus a
+  registration hook for custom transports).
+- Central catalog with sanitized, namespaced primitive names (`<server>.<tool>`).
+- Per-session publishing engine with `list_changed` notifications.
+- Six gateway-native primitives:
+  `gateway_discover_catalog`, `gateway_enable_tools`, `gateway_disable_tools`,
+  `gateway_list_active_tools`, `gateway_list_servers`, `gateway_use_profile`.
+- Profiles — named bundles of selectors that publish curated capability sets.
+- Policy engine (rate limit + approval gating + risk-level enforcement).
+- Audit logger with secret redaction.
+- Pluggable auth (`localhost` / `bearer` / `none`; OIDC/mTLS in roadmap).
+- Admin endpoints (`/admin/health`, `/admin/catalog`, `/admin/sessions`,
+  `/admin/refresh/{server}`).
+- Tests covering catalog, publishing, sanitization, and gateway primitives.
+- Working end-to-end client demo (`examples/session_flow.py`).
+
+## Install
+
+```bash
+pip install -e ".[test]"
+```
+
+## Run
+
+```bash
+python -m concierge --config config/gateway.example.yaml
+```
+
+Then point any Streamable HTTP MCP client at `http://127.0.0.1:8765/mcp`.
+
+## Demo (no client required)
+
+In one terminal:
+
+```bash
+python -m concierge --config config/gateway.example.yaml
+```
+
+In another:
+
+```bash
+python examples/session_flow.py
+```
+
+You'll see initialize → discover → enable → call → notification → disable.
+
+## Documentation
+
+- `docs/ARCHITECTURE.md` — goals, non-goals, decisions, request/session/discovery flows, security model.
+- `docs/REPO_LAYOUT.md` — directory map.
+- `docs/ROADMAP.md` — phase 2 / phase 3 plans.
+
+## Behavior the operator should remember
+
+- Default bind is **127.0.0.1**. Public bind requires `gateway.bind_public: true`.
+- Default auth is **localhost-only**. Use `bearer` for non-loopback.
+- All upstream metadata is sanitized — control bytes stripped, length capped,
+  names normalized — before it ever reaches a downstream model.
+- The gateway emits `notifications/tools/list_changed` itself; it doesn't
+  require upstream servers to support change notifications.
+- Tools flagged `requires_approval` or `risk: dangerous` are denied by
+  default until you wire in a real `ApprovalBroker` (phase 2).
+
+## Tests
+
+```bash
+pytest -q
+```

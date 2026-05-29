@@ -1,0 +1,82 @@
+# Example Concierge configuration.
+# Run: python -m concierge --config config/gateway.example.yaml
+
+gateway:
+  host: 127.0.0.1
+  port: 8765
+  bind_public: false
+  path: /mcp
+  allowed_origins:
+    - http://localhost
+    - http://127.0.0.1
+
+auth:
+  # 'localhost' = allow only loopback. Other options: 'none' | 'bearer'.
+  type: localhost
+  bearer_tokens: []
+
+log_level: INFO
+catalog_refresh_interval_s: 300
+
+policy:
+  rate_limit_capacity: 30
+  rate_limit_refill_per_sec: 0.5
+  block_dangerous_without_approval: true
+
+upstream_servers:
+  # --- 1. local stdio MCP server (filesystem-style) ---
+  - id: echo
+    transport: stdio
+    command: ["python", "examples/upstream_echo_server.py"]
+    default_risk: low
+    default_tags: ["demo", "echo"]
+    default_categories: ["utility"]
+
+  # --- 2. remote Streamable HTTP MCP server ---
+  - id: notes
+    transport: streamable_http
+    url: https://notes.example.internal/mcp
+    headers:
+      Authorization: "Bearer ${NOTES_TOKEN}"   # operator substitutes via env-templating
+    default_risk: medium
+    default_tags: ["notes"]
+    default_categories: ["productivity"]
+    requires_auth: true
+
+  # --- 3. legacy HTTP+SSE MCP server ---
+  - id: legacy-jira
+    transport: sse_legacy
+    sse_url: https://jira.example.internal/mcp/sse
+    headers:
+      Authorization: "Bearer ${JIRA_TOKEN}"
+    default_risk: high
+    default_tags: ["jira"]
+    default_categories: ["ticketing"]
+    requires_approval_for:
+      - delete_issue
+      - transition_issue
+
+  # --- 4. custom adapter placeholder ---
+  # - id: my-custom
+  #   transport: custom
+  #   custom_kind: my-wire
+  #   custom_params: { endpoint: tcp://10.0.0.5:7000 }
+
+profiles:
+  - name: demo-echo
+    description: "Just the echo upstream."
+    selectors:
+      - server: echo
+
+  - name: github-review
+    description: "Read-only GitHub review tooling."
+    selectors:
+      - server: github
+        tags: ["read"]
+        primitive_type: tool
+
+  - name: network-admin
+    description: "UniFi + DNS read/write."
+    selectors:
+      - server: unifi
+      - tags: ["dns"]
