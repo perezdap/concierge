@@ -41,6 +41,8 @@ class Profile:
     name: str
     description: str = ""
     selectors: list[ProfileSelector] = field(default_factory=list)
+    # Apply automatically at session init (see GatewayService.initialize).
+    auto_apply: bool = False
 
     def resolve(self, catalog: Catalog) -> list[str]:
         """Return matching canonical names."""
@@ -63,3 +65,7 @@ class ProfileRegistry:
 
     def all(self) -> list[Profile]:
         return list(self._profiles.values())
+
+    def auto_apply_profiles(self) -> list[Profile]:
+        """Profiles flagged to publish at session init."""
+        return [p for p in self._profiles.values() if p.auto_apply]

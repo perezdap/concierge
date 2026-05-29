@@ -198,6 +198,12 @@ Discovery can also be **workflow-scoped**: `gateway_discover_catalog` accepts a
 `gateway_list_profiles` lets a model browse available bundles before applying
 one with `gateway_use_profile`.
 
+A profile flagged `auto_apply: true` is published at session init
+(`GatewayService.initialize`), so its tools appear in the session's first
+`tools/list`. This supports clients that don't re-fetch `tools/list` on
+`notifications/tools/list_changed` — they get a usable tool surface without
+needing to react to the dynamic-publish notification.
+
 ## 14. Metrics / audit hooks
 
 The audit stream (`util/audit.py`) carries operator-facing metrics without a new

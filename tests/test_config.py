@@ -3,12 +3,16 @@
 import pytest
 from pydantic import ValidationError
 
-from concierge.config import GatewayConfig, PayloadConfig, SessionPoolConfig
+from concierge.config import GatewayConfig, PayloadConfig, ProfileConfig, SessionPoolConfig
 
 
 def test_payload_slim_tools_list_is_opt_in_by_default():
     assert PayloadConfig().slim_tools_list is False
     assert GatewayConfig().payload.slim_tools_list is False
+
+
+def test_profile_auto_apply_is_opt_in_by_default():
+    assert ProfileConfig(name="p").auto_apply is False
 
 
 @pytest.mark.parametrize(

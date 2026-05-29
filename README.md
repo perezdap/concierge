@@ -102,7 +102,10 @@ You'll see initialize → discover → enable → call → notification → disa
 - All upstream metadata is sanitized — control bytes stripped, length capped,
   names normalized — before it ever reaches a downstream model.
 - The gateway emits `notifications/tools/list_changed` itself; it doesn't
-  require upstream servers to support change notifications.
+  require upstream servers to support change notifications. Clients must
+  re-fetch `tools/list` on that notification for newly enabled tools to become
+  callable. For clients that can't react to it, flag a profile `auto_apply: true`
+  so its tools are published at session init and appear in the first `tools/list`.
 - Tools flagged `requires_approval` or `risk: dangerous` are denied by
   default until you wire in a real `ApprovalBroker` (phase 2).
 
