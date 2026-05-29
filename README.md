@@ -30,9 +30,38 @@ runtime via `notifications/tools/list_changed`.
 - Tests covering catalog, publishing, sanitization, and gateway primitives.
 - Working end-to-end client demo (`examples/session_flow.py`).
 
-## Install
+## Setup (virtual environment)
+
+Work inside a project-local virtual environment so the dependencies never touch
+your global Python. Requires **Python ≥ 3.11**.
+
+**Windows (PowerShell):**
+
+```powershell
+py -3.12 -m venv .venv          # create once (any 3.11+; py -0p lists installed)
+.\.venv\Scripts\Activate.ps1    # activate (run in each new shell)
+```
+
+If activation is blocked by execution policy, allow signed scripts for your user
+once: `Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned`.
+
+**macOS / Linux:**
 
 ```bash
+python3.11 -m venv .venv
+source .venv/bin/activate
+```
+
+Your prompt shows `(.venv)` while it's active. Leave it with `deactivate`.
+The `.venv/` folder is git-ignored — never commit it.
+
+## Install
+
+Inside the activated venv (the editable install also registers the `concierge`
+command and lets `python -m concierge ...` run without setting `PYTHONPATH`):
+
+```bash
+python -m pip install --upgrade pip
 pip install -e ".[test]"
 ```
 
