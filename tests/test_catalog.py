@@ -4,7 +4,7 @@ from concierge.core.types import CatalogEntry, PrimitiveType, RiskLevel, Transpo
 
 def _entry(name: str, server: str = "s1", tags=None, risk=RiskLevel.LOW, ptype=PrimitiveType.TOOL):
     return CatalogEntry(
-        canonical_name=f"{server}.{name}",
+        canonical_name=f"{server}__{name}",
         upstream_name=name,
         server_id=server,
         transport=TransportType.STDIO,
@@ -20,9 +20,9 @@ def test_upsert_get_remove():
     c = Catalog()
     e = _entry("foo")
     c.upsert(e)
-    assert c.get("s1.foo") is e
-    c.remove("s1.foo")
-    assert c.get("s1.foo") is None
+    assert c.get("s1__foo") is e
+    c.remove("s1__foo")
+    assert c.get("s1__foo") is None
 
 
 def test_replace_server_atomicish():
@@ -32,7 +32,7 @@ def test_replace_server_atomicish():
     c.upsert(_entry("c", server="s2"))
     c.replace_server("s1", [_entry("z")])
     names = sorted(e.canonical_name for e in c.list(limit=100))
-    assert names == ["s1.z", "s2.c"]
+    assert names == ["s1__z", "s2__c"]
 
 
 def test_list_filters_by_server_and_query_and_tags_and_risk():
@@ -41,10 +41,10 @@ def test_list_filters_by_server_and_query_and_tags_and_risk():
     c.upsert(_entry("beta", tags=["read", "fast"]))
     c.upsert(_entry("gamma", tags=["write"], risk=RiskLevel.DANGEROUS))
 
-    assert {e.canonical_name for e in c.list(server="s1")} == {"s1.alpha", "s1.beta", "s1.gamma"}
-    assert {e.canonical_name for e in c.list(query="bet")} == {"s1.beta"}
-    assert {e.canonical_name for e in c.list(tags=["read"])} == {"s1.alpha", "s1.beta"}
-    assert {e.canonical_name for e in c.list(max_risk="medium")} == {"s1.alpha", "s1.beta"}
+    assert {e.canonical_name for e in c.list(server="s1")} == {"s1__alpha", "s1__beta", "s1__gamma"}
+    assert {e.canonical_name for e in c.list(query="bet")} == {"s1__beta"}
+    assert {e.canonical_name for e in c.list(tags=["read"])} == {"s1__alpha", "s1__beta"}
+    assert {e.canonical_name for e in c.list(max_risk="medium")} == {"s1__alpha", "s1__beta"}
 
 
 def test_list_pagination():

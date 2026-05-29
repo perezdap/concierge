@@ -16,7 +16,8 @@ runtime via `notifications/tools/list_changed`.
 - One outward `/mcp` endpoint, Streamable HTTP.
 - Adapters for stdio, Streamable HTTP, and legacy HTTP+SSE upstreams (plus a
   registration hook for custom transports).
-- Central catalog with sanitized, namespaced primitive names (`<server>.<tool>`).
+- Central catalog with sanitized, namespaced primitive names (`<server>__<tool>`,
+  within the function-calling tool-name charset).
 - Per-session publishing engine with `list_changed` notifications.
 - Six gateway-native primitives:
   `gateway_discover_catalog`, `gateway_enable_tools`, `gateway_disable_tools`,

@@ -55,7 +55,7 @@ class CatalogEntry(BaseModel):
     """One upstream primitive, after sanitization and normalization."""
 
     # identity
-    canonical_name: str                       # e.g. "github.search_repos"
+    canonical_name: str                       # e.g. "github__search_repos"
     upstream_name: str                        # original name from the upstream server
     server_id: str                            # which upstream server it came from
     transport: TransportType

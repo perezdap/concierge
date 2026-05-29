@@ -65,7 +65,7 @@ async def _svc(*, auto_apply_readonly: bool = False) -> GatewayService:
     adapters.register(MultiToolAdapter("demo"), default_tags=["read"])
     await adapters.refresh_server("demo")
     # Manually tag beta as a "write" tool so a profile can select a subset.
-    beta = catalog.get("demo.beta")
+    beta = catalog.get("demo__beta")
     beta.tags = ["write"]
     catalog.upsert(beta)
 
@@ -89,7 +89,7 @@ async def test_discover_scoped_to_profile():
         "arguments": {"profile": "readonly"},
     })
     names = [e["name"] for e in res["structuredContent"]["entries"]]
-    assert names == ["demo.alpha"]          # beta (write) excluded by profile scope
+    assert names == ["demo__alpha"]          # beta (write) excluded by profile scope
 
 
 @pytest.mark.asyncio
@@ -112,7 +112,7 @@ async def test_list_profiles_reports_counts_and_sample():
     profiles = res["structuredContent"]["profiles"]
     ro = next(p for p in profiles if p["name"] == "readonly")
     assert ro["enables_count"] == 1
-    assert ro["sample"] == ["demo.alpha"]
+    assert ro["sample"] == ["demo__alpha"]
     assert ro["description"] == "Read tools only."
 
 
@@ -153,8 +153,8 @@ async def test_rapid_enable_disable_coalesces_to_one():
     publishing = PublishingService(svc.catalog, bus)
     s = await svc.sessions.create()
 
-    publishing.enable(s, ["demo.alpha"])
-    publishing.disable(s, ["demo.alpha"])   # rapid tools mutation
+    publishing.enable(s, ["demo__alpha"])
+    publishing.disable(s, ["demo__alpha"])   # rapid tools mutation
     assert bus.queue_for(s.session_id).qsize() == 1
 
 
@@ -169,8 +169,8 @@ async def test_auto_apply_profile_published_in_first_tools_list():
     await svc.initialize(s, {})
 
     names = [t["name"] for t in (await svc.tools_list(s))["tools"]]
-    assert "demo.alpha" in names        # read tool auto-published at init
-    assert "demo.beta" not in names     # write tool excluded by the profile
+    assert "demo__alpha" in names        # read tool auto-published at init
+    assert "demo__beta" not in names     # write tool excluded by the profile
     assert "readonly" in s.active_profiles
 
 
@@ -180,7 +180,7 @@ async def test_auto_applied_tool_is_callable_without_manual_enable():
     s = await svc.sessions.create()
     await svc.initialize(s, {})
     # No gateway_enable_tools call — the auto profile already published it.
-    res = await svc.tools_call(s, {"name": "demo.alpha", "arguments": {}})
+    res = await svc.tools_call(s, {"name": "demo__alpha", "arguments": {}})
     assert res == {"content": []}
 
 
@@ -191,5 +191,5 @@ async def test_non_auto_profile_does_not_publish_at_init():
     await svc.initialize(s, {})
 
     names = [t["name"] for t in (await svc.tools_list(s))["tools"]]
-    assert "demo.alpha" not in names    # nothing auto-published
+    assert "demo__alpha" not in names    # nothing auto-published
     assert s.active_profiles == []

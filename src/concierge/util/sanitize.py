@@ -90,8 +90,15 @@ def sanitize_server_id(value: str) -> str:
     return value
 
 
+# Delimiter between server id and tool name in a canonical name. Must stay
+# within the function-calling tool-name charset (^[a-zA-Z0-9_-]+$) — dots are
+# not allowed there and get mangled by many MCP clients. Double underscore is
+# collision-safe because sanitized segments never start/end with "_".
+CANONICAL_SEP = "__"
+
+
 def make_canonical_name(server_id: str, upstream_name: str) -> str:
-    return f"{sanitize_server_id(server_id)}.{sanitize_primitive_name(upstream_name)}"
+    return f"{sanitize_server_id(server_id)}{CANONICAL_SEP}{sanitize_primitive_name(upstream_name)}"
 
 
 # ---------------------------------------------------------------------------

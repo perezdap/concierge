@@ -96,7 +96,7 @@ client ──tools/call gateway_enable_tools──▶ gateway
                                         publishes selected entries
                                         emits notifications/tools/list_changed
 client ──tools/list──▶ gateway          (now sees enabled tools)
-client ──tools/call github.search_repos──▶ gateway ──▶ upstream
+client ──tools/call github__search_repos──▶ gateway ──▶ upstream
 client ──tools/call gateway_disable_tools──▶ gateway
                                         emits notifications/tools/list_changed
 ```
