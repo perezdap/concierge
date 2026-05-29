@@ -59,7 +59,8 @@ engine). See `findings.md` for the grounded codebase assessment.
 ### Phase 2 — Payload & schema optimization  ·  Status: complete
 - [x] Slim `tools/list`: `util/payload.slim_schema` tightens schema description
       cap + drops verbose keys on the model-facing surface; `/admin/catalog`
-      keeps the full (rich) schema. Config-gated (`slim_tools_list`), default on.
+      keeps the full (rich) schema. Config-gated (`slim_tools_list`), opt-in
+      (default off for backward compatibility).
 - [x] Opt-in result text cap in `tools_call` (`cap_result_text`, default OFF;
       explicit `_meta.gateway_truncated` marker — never silent).
 - [x] Drop null/default fields from discovery `_compact_entry` (omit

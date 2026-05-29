@@ -65,7 +65,8 @@ concierge/
     ├── test_session_registry.py # per-session pool, LRU, backoff, GC
     ├── test_payload.py          # schema slimming + result caps + discovery compaction
     ├── test_discovery.py        # profile-scoped discovery + list_changed coalescing
-    └── test_metrics.py          # audit payload sizes + pool/session lifecycle events
+    ├── test_metrics.py          # audit payload sizes + pool/session lifecycle events
+    └── test_config.py           # config defaults + validation (session_pool/payload)
 ```
 
 ## Configuration knobs
