@@ -125,7 +125,9 @@ async def _h_enable_tools(session: Session, args: dict[str, Any], svc: "GatewayS
 
 async def _h_disable_tools(session: Session, args: dict[str, Any], svc: "GatewayService") -> dict[str, Any]:  # noqa: F821
     names = args.get("names") or []
-    if names == "*" or args.get("all") is True:
+    # "all": true is the schema-declared way to clear everything; `names` is an
+    # array of canonical names only (no "*" sentinel — that contradicted the schema).
+    if args.get("all") is True:
         n = svc.publishing.disable_all(session)
         svc.audit.tool_disabled(session.session_id, ["*"])
         return {

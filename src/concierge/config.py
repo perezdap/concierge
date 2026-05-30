@@ -5,6 +5,8 @@ Single YAML file. Pydantic models validate it and surface clear errors.
 """
 from __future__ import annotations
 
+import os
+import re
 from pathlib import Path
 from typing import Any, Literal
 
@@ -90,6 +92,13 @@ class PolicyConfig(BaseModel):
     rate_limit_capacity: float = 30.0
     rate_limit_refill_per_sec: float = 0.5
     block_dangerous_without_approval: bool = True
+    # Approval gating for requires_approval / dangerous tools.
+    #   "deny"       — deny-by-default; every gated tool is uninvokable (safe MVP default).
+    #   "allow_list" — pre-approve canonical tool names in approval_allow_list; deny others.
+    # The full out-of-band approval workflow (queue + operator console) is P1-3.
+    approval_mode: Literal["deny", "allow_list"] = "deny"
+    # Canonical tool names ("<server>__<tool>") pre-approved when approval_mode == "allow_list".
+    approval_allow_list: list[str] = Field(default_factory=list)
 
 
 class SessionPoolConfig(BaseModel):
@@ -124,6 +133,38 @@ class GatewayConfig(BaseModel):
     catalog_refresh_interval_s: float = 300.0
 
 
+# ${VAR} or ${VAR:-default}. Names follow shell identifier rules.
+_ENV_VAR_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
+
+
+def expand_env(text: str) -> str:
+    """Substitute ${VAR} / ${VAR:-default} from the environment.
+
+    A ${VAR} with no default that is unset is an error — surfacing it beats
+    silently passing the literal "${VAR}" through as (e.g.) a secret.
+    """
+    missing: list[str] = []
+
+    def _sub(m: re.Match[str]) -> str:
+        name, default = m.group(1), m.group(2)
+        value = os.environ.get(name)
+        if value is not None:
+            return value
+        if default is not None:
+            return default
+        missing.append(name)
+        return ""
+
+    expanded = _ENV_VAR_RE.sub(_sub, text)
+    if missing:
+        names = ", ".join(sorted(set(missing)))
+        raise ValueError(
+            f"config references undefined environment variable(s): {names}. "
+            "Set them, or supply a default with ${VAR:-default}."
+        )
+    return expanded
+
+
 def load_config(path: str | Path) -> GatewayConfig:
-    data = yaml.safe_load(Path(path).read_text()) or {}
+    data = yaml.safe_load(expand_env(Path(path).read_text())) or {}
     return GatewayConfig.model_validate(data)

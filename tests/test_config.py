@@ -3,7 +3,13 @@
 import pytest
 from pydantic import ValidationError
 
-from concierge.config import GatewayConfig, PayloadConfig, ProfileConfig, SessionPoolConfig
+from concierge.config import (
+    GatewayConfig,
+    PayloadConfig,
+    ProfileConfig,
+    SessionPoolConfig,
+    expand_env,
+)
 
 
 def test_payload_slim_tools_list_is_opt_in_by_default():
@@ -38,3 +44,21 @@ def test_session_pool_rejects_non_positive_values(field: str, value: int) -> Non
 def test_payload_rejects_negative_limits(field: str, value: int) -> None:
     with pytest.raises(ValidationError):
         PayloadConfig.model_validate({field: value})
+
+
+def test_expand_env_substitutes_set_variable(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("NOTES_TOKEN", "s3cr3t")
+    assert expand_env("Bearer ${NOTES_TOKEN}") == "Bearer s3cr3t"
+
+
+def test_expand_env_uses_default_when_unset(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("MAYBE_UNSET", raising=False)
+    assert expand_env("${MAYBE_UNSET:-fallback}") == "fallback"
+
+
+def test_expand_env_raises_on_undefined_without_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("DEFINITELY_UNSET", raising=False)
+    with pytest.raises(ValueError, match="DEFINITELY_UNSET"):
+        expand_env("token: ${DEFINITELY_UNSET}")
