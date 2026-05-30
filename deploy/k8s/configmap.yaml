@@ -1,0 +1,42 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: concierge-gateway-config
+  labels:
+    app.kubernetes.io/name: concierge
+    app.kubernetes.io/component: gateway
+data:
+  gateway.yaml: |
+    gateway:
+      host: "0.0.0.0"
+      port: 8765
+      bind_public: true
+      path: /mcp
+      allowed_origins:
+        - http://localhost
+        - http://127.0.0.1
+    auth:
+      type: localhost
+      bearer_tokens: []
+    log_level: INFO
+    catalog_refresh_interval_s: 300
+    session_pool:
+      idle_ttl_s: 3600
+      gc_interval_s: 60
+      max_upstream_sessions: 256
+    payload:
+      slim_tools_list: false
+      max_schema_description_chars: 160
+      drop_schema_examples: true
+      max_result_bytes: 0
+    policy:
+      rate_limit_capacity: 30
+      rate_limit_refill_per_sec: 0.5
+      block_dangerous_without_approval: true
+    upstream_servers:
+      - id: echo
+        transport: stdio
+        command: ["python", "examples/upstream_echo_server.py"]
+        default_risk: low
+        default_tags: ["demo", "echo"]
+        default_categories: ["utility"]
