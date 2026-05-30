@@ -7,6 +7,7 @@ import sys
 import pytest
 
 from concierge.adapters.stdio import StdioAdapter
+from concierge.core.notifications import NotificationBus
 
 
 class _FakeStream:
@@ -72,3 +73,35 @@ async def test_large_stderr_burst_does_not_deadlock_stdout_response():
         assert result == {"ok": True}
     finally:
         await adapter.close()
+
+
+# --- bounded notification queues (P0-5) -----------------------------------
+#
+# A per-session SSE queue must not grow without bound when its consumer is
+# slow or absent (a disconnected client that never drains its stream), or the
+# gateway leaks memory. list_changed signals are idempotent, so dropping the
+# stalest one on overflow is safe.
+
+
+@pytest.mark.asyncio
+async def test_notification_queue_is_bounded_and_keeps_newest():
+    bus = NotificationBus(coalesce_window_s=0.0, max_queue_size=3)
+    sid = "s1"
+    for i in range(10):  # distinct methods so coalescing never folds them
+        bus.publish(sid, f"notifications/x/{i}")
+    q = bus.queue_for(sid)
+    assert q.qsize() == 3  # bounded, not 10
+    drained = [q.get_nowait()["method"] for _ in range(3)]
+    assert drained == [
+        "notifications/x/7",
+        "notifications/x/8",
+        "notifications/x/9",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_notification_publish_still_delivers_under_cap():
+    bus = NotificationBus(max_queue_size=8)
+    bus.tools_list_changed("s2")
+    msg = bus.queue_for("s2").get_nowait()
+    assert msg["method"] == "notifications/tools/list_changed"

@@ -17,15 +17,19 @@ from typing import Any
 
 
 class NotificationBus:
-    def __init__(self, coalesce_window_s: float = 0.05) -> None:
+    def __init__(self, coalesce_window_s: float = 0.05, *, max_queue_size: int = 1024) -> None:
         self._queues: dict[str, asyncio.Queue[dict[str, Any]]] = {}
         self._last_emit: dict[tuple[str, str], float] = {}
         self._coalesce = coalesce_window_s
+        # Per-session queues are bounded: a slow or vanished SSE consumer must
+        # not let a session's backlog grow without limit (memory leak). 0 means
+        # unbounded — avoid in production.
+        self._max_queue_size = max_queue_size
 
     def queue_for(self, session_id: str) -> asyncio.Queue[dict[str, Any]]:
         q = self._queues.get(session_id)
         if q is None:
-            q = asyncio.Queue()
+            q = asyncio.Queue(maxsize=self._max_queue_size)
             self._queues[session_id] = q
         return q
 
@@ -42,8 +46,22 @@ class NotificationBus:
         msg = {"jsonrpc": "2.0", "method": method}
         if params is not None:
             msg["params"] = params
-        # asyncio.Queue.put_nowait — no awaiting in publishers.
-        q.put_nowait(msg)
+        # asyncio.Queue.put_nowait — no awaiting in publishers. If the consumer
+        # has stalled and the queue is full, drop the stalest signal to make
+        # room: list_changed notifications are idempotent, so the newest one
+        # still tells the client to re-list. This bounds memory instead of
+        # raising QueueFull into the publishing path.
+        try:
+            q.put_nowait(msg)
+        except asyncio.QueueFull:
+            try:
+                q.get_nowait()
+            except asyncio.QueueEmpty:
+                pass
+            try:
+                q.put_nowait(msg)
+            except asyncio.QueueFull:
+                pass
 
     # Helpers
     def tools_list_changed(self, session_id: str) -> None:
