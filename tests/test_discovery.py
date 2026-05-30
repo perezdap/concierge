@@ -9,7 +9,7 @@ from concierge.core.catalog import Catalog
 from concierge.core.notifications import NotificationBus
 from concierge.core.publishing import PublishingService
 from concierge.core.session import SessionManager
-from concierge.core.types import AdapterHealth, PrimitiveType, TransportType
+from concierge.core.types import AdapterHealth, TransportType
 from concierge.gateway.profiles import Profile, ProfileRegistry, ProfileSelector
 from concierge.gateway.service import GatewayService
 from concierge.policy.approval import DenyByDefaultApprovalBroker
