@@ -23,7 +23,7 @@ from typing import Any, AsyncIterator
 from urllib.parse import urlparse
 
 from fastapi import APIRouter, Header, HTTPException, Request, Response
-from fastapi.responses import JSONResponse, Response, StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
 from ..core.notifications import NotificationBus
 from ..core.session import SessionManager
