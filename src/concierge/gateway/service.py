@@ -38,6 +38,23 @@ _log = get_logger("concierge.service")
 
 PROTOCOL_VERSION = "2025-06-18"
 
+# Supported MCP protocol versions for negotiation (see P0-4).
+# We currently support only the 2025-06-18 Streamable HTTP baseline.
+SUPPORTED_PROTOCOL_VERSIONS: list[str] = ["2025-06-18"]
+
+
+def negotiate_protocol_version(client_version: str | None) -> str:
+    """Negotiate the protocol version for a session.
+
+    Per MCP spec and P0-4:
+    - Echo client's version if we support it.
+    - Otherwise fall back to our best (current) version.
+    - In the future we can return an error for truly incompatible versions.
+    """
+    if client_version and client_version in SUPPORTED_PROTOCOL_VERSIONS:
+        return client_version
+    return PROTOCOL_VERSION
+
 
 def _safe_bytes(obj: Any) -> int | None:
     """Serialized UTF-8 byte size of a payload, for metrics. None if unmeasurable."""
@@ -75,8 +92,11 @@ class GatewayService:
     # MCP method handlers
     # ------------------------------------------------------------------
     async def initialize(self, session: Session, params: dict[str, Any]) -> dict[str, Any]:
+        client_version = params.get("protocolVersion") if isinstance(params, dict) else None
+        agreed_version = negotiate_protocol_version(client_version)
+
         session.client_info = params.get("clientInfo", {}) if isinstance(params, dict) else {}
-        session.protocol_version = params.get("protocolVersion") if isinstance(params, dict) else None
+        session.protocol_version = agreed_version
         self.audit.session_created(
             session.session_id,
             client=session.client_info.get("name"),
@@ -84,7 +104,7 @@ class GatewayService:
         )
         self._apply_auto_profiles(session)
         return {
-            "protocolVersion": PROTOCOL_VERSION,
+            "protocolVersion": agreed_version,
             "serverInfo": {"name": "concierge", "version": "0.1.0"},
             "capabilities": {
                 "tools": {"listChanged": True},
