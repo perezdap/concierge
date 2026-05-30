@@ -323,13 +323,15 @@ async def test_aclose_invokes_on_evict_once():
 
 
 @pytest.mark.asyncio
-async def test_sync_close_rejects_async_eviction_hook():
+async def test_close_invokes_on_evict_and_removes_session():
+    evicted: list[str] = []
+
     async def on_evict(sid: str) -> None:
-        raise AssertionError("should not be called")
+        evicted.append(sid)
 
     sm = SessionManager(on_evict=on_evict)
     s = await sm.create()
 
-    with pytest.raises(RuntimeError, match="aclose"):
-        sm.close(s.session_id)
-    assert sm.get(s.session_id) is not None
+    await sm.close(s.session_id)
+    assert evicted == [s.session_id]
+    assert await sm.get(s.session_id) is None

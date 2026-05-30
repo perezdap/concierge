@@ -144,3 +144,25 @@
 ### Validation
 - `python -m pytest tests/test_auth_providers.py -q` → **8 passed**, 1 existing Starlette/httpx deprecation warning.
 - `python -m pytest -x -vv` currently fails outside this task at `tests/test_app_factory.py::test_build_auth_variants` (`AuthConfig` passed to `_build_auth`, which currently expects the full gateway config). Not addressed for P0-2.
+
+---
+
+## Session 3 — 2026-05-30 — QA-E2E / quality gate triage
+
+### Done
+- Claimed BridgeMind task `53678898-b349-4881-adcb-2083797e980e` ([QA-E2E] standing release verification) for the QA Engineer and moved it to `in-progress`.
+- Ran baseline suite: `.venv/Scripts/python.exe -m pytest -q` → **215 passed**, 1 existing Starlette/httpx deprecation warning.
+- Found quality-gate failures in tracked P0/P1 edits: mypy annotation issues and Bandit low-severity findings (`except: pass`, non-crypto jitter RNG, runtime `assert`). Applied surgical cleanup in tracked files only.
+
+### Validation
+- Initial cleanup fixed tracked code issues but exposed draft P1-2 storage files in the quality gate.
+- Reconciled storage draft with the now-async `CatalogStore` interface: `SqliteCatalogStore` remains async via `asyncio.to_thread()`, `PostgresCatalogStore` implements the async ABC, and storage tests match async catalog semantics.
+- Final local quality gate is green:
+  - `.venv/Scripts/python.exe -m ruff check src tests` → **PASS**
+  - `.venv/Scripts/python.exe -m mypy src` → **PASS**
+  - `.venv/Scripts/python.exe -m bandit -q -r src/concierge` → **PASS**
+  - `.venv/Scripts/python.exe -m pip_audit` → **PASS**
+  - `.venv/Scripts/python.exe -m pytest --cov -q` → **223 passed, 6 skipped**, coverage **83.67%**
+
+### Follow-up
+- Workspace now has a clean quality-gate story. Next QA step is to verify in-review BridgeMind P0/P1 tasks against their acceptance criteria, starting with P0 blockers.

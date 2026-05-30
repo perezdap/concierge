@@ -27,18 +27,18 @@ def build_admin_router(
     async def health() -> dict:
         return {
             "ok": True,
-            "catalog_count": catalog.count(),
-            "session_count": len(sessions.all()),
+            "catalog_count": await catalog.count(),
+            "session_count": len(await sessions.all()),
             "servers": [a.health().model_dump() for a in adapters.all()],
         }
 
     @router.get("/catalog", dependencies=[Depends(_auth_dep)])
     async def list_catalog() -> dict:
-        return {"entries": [e.model_dump() for e in catalog.list(limit=10_000)]}
+        return {"entries": [e.model_dump() for e in await catalog.list(limit=10_000)]}
 
     @router.get("/sessions", dependencies=[Depends(_auth_dep)])
     async def list_sessions() -> dict:
-        return {"sessions": [s.model_dump(mode="json") for s in sessions.all()]}
+        return {"sessions": [s.model_dump(mode="json") for s in await sessions.all()]}
 
     @router.post("/refresh/{server_id}", dependencies=[Depends(_auth_dep)])
     async def refresh(server_id: str) -> dict:

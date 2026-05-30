@@ -14,8 +14,9 @@ from __future__ import annotations
 
 import asyncio
 import json
-from datetime import datetime, timezone
-from typing import Any, AsyncIterator
+from collections.abc import AsyncIterator
+from datetime import UTC, datetime
+from typing import Any
 
 import httpx
 
@@ -63,7 +64,7 @@ class StreamableHttpAdapter(UpstreamAdapter):
     async def connect(self) -> None:
         self._client = httpx.AsyncClient(timeout=self.request_timeout_s)
         self._connected = True
-        self._last_connected_at = datetime.now(timezone.utc)
+        self._last_connected_at = datetime.now(UTC)
         self._failures = 0
 
     async def close(self) -> None:
@@ -154,19 +155,26 @@ class StreamableHttpAdapter(UpstreamAdapter):
         if not self._client:
             return
         try:
-            await self._client.post(self.url, json=build_notification(method, params), headers=self._headers())
+            await self._client.post(
+                self.url, json=build_notification(method, params),
+                headers=self._headers(),
+            )
         except httpx.HTTPError:
             self._connected = False
 
     async def _start_listener(self) -> None:
         if not self.listen_for_notifications or self._listener or not self._client:
             return
-        self._listener = asyncio.create_task(self._listen_loop(), name=f"sht-listen-{self.server_id}")
+        self._listener = asyncio.create_task(
+            self._listen_loop(), name=f"sht-listen-{self.server_id}"
+        )
 
     async def _listen_loop(self) -> None:
-        assert self._client
+        client = self._client
+        if client is None:
+            return
         try:
-            async with self._client.stream("GET", self.url, headers=self._headers()) as resp:
+            async with client.stream("GET", self.url, headers=self._headers()) as resp:
                 if resp.status_code >= 400:
                     return
                 async for payload in self._iter_sse_data(resp):
@@ -223,7 +231,9 @@ class StreamableHttpAdapter(UpstreamAdapter):
         result = await self._post("resources/read", {"uri": uri})
         return result if isinstance(result, dict) else {}
 
-    async def get_prompt(self, name: str, arguments: dict[str, Any] | None = None) -> dict[str, Any]:
+    async def get_prompt(
+        self, name: str, arguments: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
         result = await self._post("prompts/get", {"name": name, "arguments": arguments or {}})
         return result if isinstance(result, dict) else {}
 

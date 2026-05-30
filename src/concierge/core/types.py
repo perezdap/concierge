@@ -7,32 +7,31 @@ engine, registry, etc. operate on these as plain data.
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from enum import Enum
+from datetime import UTC, datetime
+from enum import StrEnum
 from typing import Any, Literal
 from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
-
 # ---------------------------------------------------------------------------
 # Primitive identity
 # ---------------------------------------------------------------------------
 
-class PrimitiveType(str, Enum):
+class PrimitiveType(StrEnum):
     TOOL = "tool"
     RESOURCE = "resource"
     PROMPT = "prompt"
 
 
-class RiskLevel(str, Enum):
+class RiskLevel(StrEnum):
     LOW = "low"
     MEDIUM = "medium"
     HIGH = "high"
     DANGEROUS = "dangerous"
 
 
-class TransportType(str, Enum):
+class TransportType(StrEnum):
     STDIO = "stdio"
     STREAMABLE_HTTP = "streamable_http"
     SSE_LEGACY = "sse_legacy"
@@ -85,7 +84,7 @@ class CatalogEntry(BaseModel):
     version: str | None = None
 
     # state
-    cataloged_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    cataloged_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
     # resilience (P1-5 / T3): false when upstream is down (kept in catalog, not removed;
     # mirrors the existing callable flag on PublishedPrimitive). Discovery/publishing/service
@@ -101,7 +100,7 @@ class PublishedPrimitive(BaseModel):
     """Per-session record of a published catalog entry."""
     canonical_name: str
     primitive_type: PrimitiveType
-    enabled_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    enabled_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     enabled_by: str = "client"                # "client" | "profile:<name>" | "default"
     callable: bool = True                     # may be false if upstream is down
 
@@ -121,8 +120,8 @@ class Session(BaseModel):
     active_profiles: list[str] = Field(default_factory=list)
 
     # bookkeeping
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-    last_seen_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    last_seen_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
     def published_set(self, ptype: PrimitiveType) -> dict[str, PublishedPrimitive]:
         if ptype == PrimitiveType.TOOL:

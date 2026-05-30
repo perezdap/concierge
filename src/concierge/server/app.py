@@ -7,22 +7,39 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
+from typing import Any
 
 from fastapi import FastAPI
 
+from ..adapters.base import UpstreamAdapter
+from ..adapters.caching import CachingAdapter
 from ..adapters.custom import build_custom_adapter
 from ..adapters.manager import AdapterManager
 from ..adapters.sse_legacy import LegacySseAdapter
 from ..adapters.stdio import StdioAdapter
 from ..adapters.streamable_http import StreamableHttpAdapter
-from ..config import GatewayConfig, UpstreamServerConfig
+from ..config import (
+    CacheConfig,
+    GatewayConfig,
+    OutputConfig,
+    StorageConfig,
+    UpstreamServerConfig,
+)
 from ..core.catalog import Catalog, InMemoryCatalogStore
+from ..core.catalog_store import PostgresCatalogStore, SqliteCatalogStore
 from ..core.notifications import NotificationBus
 from ..core.publishing import PublishingService
-from ..core.session import SessionManager
+from ..core.session import RedisSessionManager, SessionManager
 from ..core.types import PrimitiveType
 from ..gateway.profiles import Profile, ProfileRegistry, ProfileSelector
 from ..gateway.service import GatewayService
+from ..observability import (
+    HttpAuditSink,
+    MetricAuditSink,
+    MetricRegistry,
+    build_observability_router,
+    record_request_metrics,
+)
 from ..policy.approval import (
     AllowListApprovalBroker,
     ApprovalBroker,
@@ -32,6 +49,7 @@ from ..policy.engine import PolicyEngine
 from ..policy.ratelimit import TokenBucketRateLimiter
 from ..util.audit import AuditLogger
 from ..util.log import configure_logging, get_logger
+from ..util.output_filter import ContentTypeFilter, LengthCapper, OutputFilter, SecretRedactor
 from ..util.payload import PayloadOptions
 from .admin import build_admin_router
 from .auth import AuthProvider, LocalhostAllowAuth, NoAuth, StaticBearerAuth
@@ -41,7 +59,7 @@ from .origin import OriginAllowlistMiddleware
 _log = get_logger("concierge.app")
 
 
-def _build_adapter(cfg: UpstreamServerConfig):
+def _build_adapter(cfg: UpstreamServerConfig) -> UpstreamAdapter:
     if cfg.transport == "stdio":
         if not cfg.command:
             raise ValueError(f"{cfg.id}: stdio transport requires 'command'")
@@ -86,20 +104,77 @@ def _build_auth(cfg: GatewayConfig) -> AuthProvider:
     return LocalhostAllowAuth()
 
 
+def _wrap_cache(adapter: UpstreamAdapter, cfg: CacheConfig) -> UpstreamAdapter:
+    """Apply the optional read-through cache decorator to an upstream adapter."""
+    if not cfg.enable_cache:
+        return adapter
+    return CachingAdapter(
+        adapter,
+        default_ttl_s=cfg.default_ttl_s,
+        cache_reads=cfg.cache_resources,
+        cache_prompts=cfg.cache_prompts,
+    )
+
+
+def _build_output_filter(cfg: OutputConfig) -> OutputFilter | None:
+    """Build the optional response-side output filter chain."""
+    if not cfg.enable_output_filter:
+        return None
+    filters: list[Any] = []
+    if cfg.redact_secrets:
+        filters.append(SecretRedactor())
+    if cfg.max_result_bytes > 0:
+        filters.append(LengthCapper(max_bytes=cfg.max_result_bytes))
+    if cfg.allow_content_types:
+        filters.append(ContentTypeFilter(set(cfg.allow_content_types)))
+    return OutputFilter(filters)
+
+
 def _build_approval(cfg: GatewayConfig) -> ApprovalBroker:
     if cfg.policy.approval_mode == "allow_list":
         return AllowListApprovalBroker(cfg.policy.approval_allow_list)
     return DenyByDefaultApprovalBroker()
 
 
+def _build_catalog_store(cfg: StorageConfig) -> Catalog:
+    if cfg.catalog_store == "sqlite":
+        path = cfg.catalog_sqlite_path or ":memory:"
+        return Catalog(SqliteCatalogStore(path))
+    if cfg.catalog_store == "postgres":
+        if not cfg.catalog_postgres_url:
+            raise ValueError("catalog_postgres_url is required when catalog_store=postgres")
+        return Catalog(PostgresCatalogStore(cfg.catalog_postgres_url))
+    return Catalog(InMemoryCatalogStore())
+
+
+def _build_session_manager(cfg: GatewayConfig) -> SessionManager:
+    spool = cfg.session_pool
+    storage = cfg.storage
+    if storage.session_store == "redis":
+        if not storage.redis_url:
+            raise ValueError("redis_url is required when session_store=redis")
+        return RedisSessionManager(
+            storage.redis_url,
+            idle_ttl_seconds=spool.idle_ttl_s,
+        )
+    return SessionManager(idle_ttl_seconds=spool.idle_ttl_s)
+
+
 def build_app(config: GatewayConfig) -> FastAPI:
     configure_logging(config.log_level)
 
     # Core subsystems
-    catalog = Catalog(InMemoryCatalogStore())
+    catalog = _build_catalog_store(config.storage)
     bus = NotificationBus()
     publishing = PublishingService(catalog, bus)
-    audit = AuditLogger()
+    metrics = MetricRegistry()
+    audit_sinks: list[Any] = [MetricAuditSink(metrics)]
+    if config.observability.audit_http_sink_url:
+        audit_sinks.append(HttpAuditSink(
+            config.observability.audit_http_sink_url,
+            timeout_s=config.observability.audit_http_timeout_s,
+        ))
+    audit = AuditLogger(sinks=audit_sinks)
 
     adapters = AdapterManager(
         catalog,
@@ -114,12 +189,15 @@ def build_app(config: GatewayConfig) -> FastAPI:
         freed = await adapters.evict_router_session(session_id)
         audit.session_evicted(session_id, upstream_sessions_freed=freed)
 
-    sessions = SessionManager(
-        idle_ttl_seconds=config.session_pool.idle_ttl_s,
-        on_evict=_on_session_evict,
-    )
+    sessions = _build_session_manager(config)
+    sessions._on_evict = _on_session_evict
+    sessions.idle_ttl = config.session_pool.idle_ttl_s
     for srv in config.upstream_servers:
-        adapter = _build_adapter(srv)
+        adapter = _wrap_cache(_build_adapter(srv), config.cache)
+
+        def adapter_factory(s: UpstreamServerConfig = srv) -> UpstreamAdapter:
+            return _wrap_cache(_build_adapter(s), config.cache)
+
         adapters.register(
             adapter,
             default_risk=srv.default_risk,
@@ -128,9 +206,7 @@ def build_app(config: GatewayConfig) -> FastAPI:
             requires_auth=srv.requires_auth,
             requires_approval_for=srv.requires_approval_for,
             isolation=srv.isolation,
-            # Factory mints a fresh adapter for per_session isolation. Bind srv
-            # via default arg so each closure keeps its own upstream config.
-            factory=(lambda s=srv: _build_adapter(s)),
+            factory=adapter_factory,
             connect_max_retries=srv.connect_max_retries,
             connect_backoff_base_s=srv.connect_backoff_base_s,
             connect_backoff_max_s=srv.connect_backoff_max_s,
@@ -178,6 +254,7 @@ def build_app(config: GatewayConfig) -> FastAPI:
         bus=bus,
         profiles=profile_registry,
         payload=PayloadOptions(**config.payload.model_dump()),
+        output_filter=_build_output_filter(config.output),
     )
     auth = _build_auth(config)
 
@@ -205,8 +282,35 @@ def build_app(config: GatewayConfig) -> FastAPI:
         finally:
             gc_task.cancel()
             await adapters.stop_all()
+            # Close persistent stores on shutdown (P1-2)
+            if hasattr(catalog.store, "close"):
+                try:
+                    close_fn = catalog.store.close
+                    if asyncio.iscoroutinefunction(close_fn):
+                        await close_fn()
+                    else:
+                        close_fn()
+                except Exception as e:  # noqa: BLE001
+                    _log.warning("catalog store close failed: %s", e)
+            if hasattr(sessions, "close_redis"):
+                try:
+                    await sessions.close_redis()  # type: ignore[attr-defined]
+                except Exception as e:  # noqa: BLE001
+                    _log.warning("redis session store close failed: %s", e)
+            for sink in audit_sinks:
+                close_fn = getattr(sink, "close", None)
+                if close_fn is not None:
+                    try:
+                        close_fn()
+                    except Exception as e:  # noqa: BLE001
+                        _log.warning("audit sink close failed: %s", e)
 
     app = FastAPI(title="Concierge", version="0.1.0", lifespan=lifespan)
+
+    @app.middleware("http")
+    async def _record_metrics(request, call_next):  # type: ignore[no-untyped-def]
+        return await record_request_metrics(request, call_next, metrics)
+
     # Enforce the Origin allow-list globally, ahead of every route handler, so no
     # MCP route (POST/GET/DELETE) can be reached with an untrusted browser Origin
     # — a structural guarantee independent of any per-handler check (P0-1).
@@ -230,6 +334,15 @@ def build_app(config: GatewayConfig) -> FastAPI:
         sessions=sessions,
         service=service,
     ))
+    app.include_router(build_observability_router(
+        metrics=metrics,
+        adapters=adapters,
+        sessions=sessions,
+        bus=bus,
+        metrics_path=config.observability.metrics_path,
+        health_path=config.observability.health_path,
+        ready_path=config.observability.ready_path,
+    ))
 
     # Expose for tests / programmatic access.
     app.state.catalog = catalog
@@ -239,4 +352,5 @@ def build_app(config: GatewayConfig) -> FastAPI:
     app.state.service = service
     app.state.bus = bus
     app.state.profiles = profile_registry
+    app.state.metrics = metrics
     return app

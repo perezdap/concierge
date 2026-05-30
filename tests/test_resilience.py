@@ -11,7 +11,6 @@ TDD order: these tests written FIRST (must fail), then min code to green.
 Run: PYTHONPATH=src python -m pytest tests/test_resilience.py -q --tb=short
 """
 
-import asyncio
 from typing import Any
 
 import pytest
@@ -132,15 +131,15 @@ async def test_manager_marks_catalog_entries_callable_false_on_upstream_down():
     """When upstream health fails (simulated disconnect), refresh or mark must set callable=false on its entries (not remove them)."""
     mgr, catalog, adapter = _build_minimal_manager()
     await mgr.start_all()  # initial success populates
-    assert len(catalog.list(server="test_upstream")) > 0
-    assert all(e.callable for e in catalog.list(server="test_upstream"))
+    assert len(await catalog.list(server="test_upstream")) > 0
+    assert all(e.callable for e in await catalog.list(server="test_upstream"))
 
     # Simulate loss: force disconnect + refresh failure path
     adapter._connected = False
     # refresh should detect not connected, attempt (fail), and mark down
-    count = await mgr.refresh_server("test_upstream")
+    await mgr.refresh_server("test_upstream")
     # After failure path, entries should still exist but marked non-callable
-    entries = catalog.list(server="test_upstream")
+    entries = await catalog.list(server="test_upstream")
     assert len(entries) > 0, "entries must be kept, not removed on transient down"
     assert all(e.callable is False for e in entries), "must mark callable=false while down"
 
@@ -168,11 +167,11 @@ async def test_reconnect_with_backoff_after_kill_restores_callable_true():
     await mgr.start_all()
     adapter._connected = False
     await mgr.refresh_server("test_upstream")
-    assert all(e.callable is False for e in catalog.list(server="test_upstream"))
+    assert all(e.callable is False for e in await catalog.list(server="test_upstream"))
 
     # Now "fix" the upstream and trigger reconnect path
     adapter._connected = True
     # In real, the watch/refresh or explicit would use backoff path
     # For TDD, assert that after success refresh, callable restored
     await mgr.refresh_server("test_upstream")
-    assert all(e.callable is True for e in catalog.list(server="test_upstream"))
+    assert all(e.callable is True for e in await catalog.list(server="test_upstream"))

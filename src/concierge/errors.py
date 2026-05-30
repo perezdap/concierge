@@ -8,7 +8,6 @@ from __future__ import annotations
 
 from typing import Any
 
-
 # Reserved JSON-RPC error codes used by MCP clients per the spec.
 JSONRPC_PARSE_ERROR = -32700
 JSONRPC_INVALID_REQUEST = -32600

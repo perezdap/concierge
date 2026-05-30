@@ -12,13 +12,16 @@ Each primitive is registered with:
 """
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable
+from typing import TYPE_CHECKING, Any
 
 from ..core.types import PrimitiveType, Session
 
+if TYPE_CHECKING:
+    from .service import GatewayService
 
-GatewayHandler = Callable[[Session, dict[str, Any], "GatewayService"], Awaitable[dict[str, Any]]]  # noqa: F821
+GatewayHandler = Callable[[Session, dict[str, Any], "GatewayService"], Awaitable[dict[str, Any]]]
 
 
 @dataclass
@@ -42,7 +45,9 @@ class GatewayPrimitive:
 #  Handler implementations                                                    #
 # --------------------------------------------------------------------------- #
 
-async def _h_discover_catalog(session: Session, args: dict[str, Any], svc: "GatewayService") -> dict[str, Any]:  # noqa: F821
+async def _h_discover_catalog(
+    session: Session, args: dict[str, Any], svc: GatewayService  # noqa: F821
+) -> dict[str, Any]:  # noqa: F821
     # Optional workflow-scoped discovery: restrict to what a named profile would
     # enable, so a model can browse just the tools relevant to a workflow.
     names: set[str] | None = None
@@ -51,9 +56,9 @@ async def _h_discover_catalog(session: Session, args: dict[str, Any], svc: "Gate
         profile = svc.profiles.get(profile_name)
         if profile is None:
             raise ValueError(f"unknown profile: {profile_name}")
-        names = set(profile.resolve(svc.catalog))
+        names = set(await profile.resolve(svc.catalog))
 
-    entries = svc.catalog.list(
+    entries = await svc.catalog.list(
         query=args.get("query"),
         server=args.get("server"),
         category=args.get("category"),
@@ -111,30 +116,36 @@ def _summarize_count(entries: list) -> str:
     return f"{len(entries)} matching catalog entries. e.g. {sample}"
 
 
-async def _h_enable_tools(session: Session, args: dict[str, Any], svc: "GatewayService") -> dict[str, Any]:  # noqa: F821
+async def _h_enable_tools(
+    session: Session, args: dict[str, Any], svc: GatewayService  # noqa: F821
+) -> dict[str, Any]:  # noqa: F821
     names = args.get("names") or []
     if not isinstance(names, list) or not all(isinstance(n, str) for n in names):
         raise ValueError("names must be a list of strings")
-    enabled, skipped = svc.publishing.enable(session, names, by="client")
+    enabled, skipped = await svc.publishing.enable(session, names, by="client")
     svc.audit.tool_enabled(session.session_id, enabled, by="client")
     return {
-        "content": [{"type": "text", "text": f"Enabled {len(enabled)} tool(s); skipped {len(skipped)}."}],
+        "content": [
+            {"type": "text", "text": f"Enabled {len(enabled)} tool(s); skipped {len(skipped)}."}
+        ],
         "structuredContent": {"enabled": enabled, "skipped": skipped},
     }
 
 
-async def _h_disable_tools(session: Session, args: dict[str, Any], svc: "GatewayService") -> dict[str, Any]:  # noqa: F821
+async def _h_disable_tools(
+    session: Session, args: dict[str, Any], svc: GatewayService  # noqa: F821
+) -> dict[str, Any]:  # noqa: F821
     names = args.get("names") or []
     # "all": true is the schema-declared way to clear everything; `names` is an
     # array of canonical names only (no "*" sentinel — that contradicted the schema).
     if args.get("all") is True:
-        n = svc.publishing.disable_all(session)
+        n = await svc.publishing.disable_all(session)
         svc.audit.tool_disabled(session.session_id, ["*"])
         return {
             "content": [{"type": "text", "text": f"Disabled all {n} published primitives."}],
             "structuredContent": {"disabled_count": n},
         }
-    removed = svc.publishing.disable(session, names)
+    removed = await svc.publishing.disable(session, names)
     svc.audit.tool_disabled(session.session_id, removed)
     return {
         "content": [{"type": "text", "text": f"Disabled {len(removed)} tool(s)."}],
@@ -142,22 +153,34 @@ async def _h_disable_tools(session: Session, args: dict[str, Any], svc: "Gateway
     }
 
 
-async def _h_list_active_tools(session: Session, args: dict[str, Any], svc: "GatewayService") -> dict[str, Any]:  # noqa: F821
+async def _h_list_active_tools(
+    session: Session, args: dict[str, Any], svc: GatewayService  # noqa: F821
+) -> dict[str, Any]:  # noqa: F821
     out: dict[str, list[dict[str, Any]]] = {"tools": [], "resources": [], "prompts": []}
     for ptype, key in (
         (PrimitiveType.TOOL, "tools"),
         (PrimitiveType.RESOURCE, "resources"),
         (PrimitiveType.PROMPT, "prompts"),
     ):
-        for e in svc.publishing.list_published(session, ptype):
-            out[key].append({"name": e.canonical_name, "server": e.server_id, "label": e.display_label})
+        for e in await svc.publishing.list_published(session, ptype):
+            out[key].append({
+                "name": e.canonical_name, "server": e.server_id, "label": e.display_label
+            })
     return {
-        "content": [{"type": "text", "text": f"Active: {len(out['tools'])} tools, {len(out['resources'])} resources, {len(out['prompts'])} prompts."}],
+        "content": [
+            {"type": "text", "text": (
+                f"Active: {len(out['tools'])} tools, "
+                f"{len(out['resources'])} resources, "
+                f"{len(out['prompts'])} prompts."
+            )}
+        ],
         "structuredContent": out,
     }
 
 
-async def _h_list_servers(session: Session, args: dict[str, Any], svc: "GatewayService") -> dict[str, Any]:  # noqa: F821
+async def _h_list_servers(
+    session: Session, args: dict[str, Any], svc: GatewayService  # noqa: F821
+) -> dict[str, Any]:  # noqa: F821
     servers = []
     for adapter in svc.adapters.all():
         h = adapter.health()
@@ -174,10 +197,12 @@ async def _h_list_servers(session: Session, args: dict[str, Any], svc: "GatewayS
     }
 
 
-async def _h_list_profiles(session: Session, args: dict[str, Any], svc: "GatewayService") -> dict[str, Any]:  # noqa: F821
+async def _h_list_profiles(
+    session: Session, args: dict[str, Any], svc: GatewayService  # noqa: F821
+) -> dict[str, Any]:  # noqa: F821
     profiles = []
     for p in svc.profiles.all():
-        names = p.resolve(svc.catalog)
+        names = await p.resolve(svc.catalog)
         profiles.append({
             "name": p.name,
             "description": p.description,
@@ -190,20 +215,24 @@ async def _h_list_profiles(session: Session, args: dict[str, Any], svc: "Gateway
     }
 
 
-async def _h_use_profile(session: Session, args: dict[str, Any], svc: "GatewayService") -> dict[str, Any]:  # noqa: F821
+async def _h_use_profile(
+    session: Session, args: dict[str, Any], svc: GatewayService  # noqa: F821
+) -> dict[str, Any]:  # noqa: F821
     name = args.get("profile")
     if not isinstance(name, str):
         raise ValueError("profile must be a string")
     profile = svc.profiles.get(name)
     if profile is None:
         raise ValueError(f"unknown profile: {name}")
-    names = profile.resolve(svc.catalog)
-    enabled, skipped = svc.publishing.enable(session, names, by=f"profile:{name}")
+    names = await profile.resolve(svc.catalog)
+    enabled, skipped = await svc.publishing.enable(session, names, by=f"profile:{name}")
     if name not in session.active_profiles:
         session.active_profiles.append(name)
     svc.audit.tool_enabled(session.session_id, enabled, by=f"profile:{name}")
     return {
-        "content": [{"type": "text", "text": f"Profile {name!r} enabled {len(enabled)} primitive(s)."}],
+        "content": [
+            {"type": "text", "text": f"Profile {name!r} enabled {len(enabled)} primitive(s)."}
+        ],
         "structuredContent": {"profile": name, "enabled": enabled, "skipped": skipped},
     }
 
@@ -226,12 +255,16 @@ def builtin_primitives() -> dict[str, GatewayPrimitive]:
                 "type": "object",
                 "properties": {
                     "query": {"type": "string", "description": "Free-text substring filter."},
-                    "server": {"type": "string", "description": "Restrict to one upstream server id."},
+                    "server": {"type": "string", "description": (
+                        "Restrict to one upstream server id."
+                    )},
                     "category": {"type": "string"},
                     "tags": {"type": "array", "items": {"type": "string"}},
                     "primitive_type": {"type": "string", "enum": ["tool", "resource", "prompt"]},
                     "max_risk": {"type": "string", "enum": ["low", "medium", "high", "dangerous"]},
-                    "profile": {"type": "string", "description": "Restrict results to what this profile would enable."},
+                    "profile": {"type": "string", "description": (
+                        "Restrict results to what this profile would enable."
+                    )},
                     "limit": {"type": "integer", "minimum": 1, "maximum": 200},
                     "offset": {"type": "integer", "minimum": 0},
                 },

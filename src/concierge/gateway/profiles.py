@@ -27,9 +27,13 @@ class ProfileSelector:
             return False
         if self.primitive_type and entry.primitive_type != self.primitive_type:
             return False
-        if self.tags and not set(t.lower() for t in self.tags).issubset({t.lower() for t in entry.tags}):
+        if self.tags and not set(t.lower() for t in self.tags).issubset(
+            {t.lower() for t in entry.tags}
+        ):
             return False
-        if self.categories and not set(c.lower() for c in self.categories).issubset({c.lower() for c in entry.categories}):
+        if self.categories and not set(c.lower() for c in self.categories).issubset(
+            {c.lower() for c in entry.categories}
+        ):
             return False
         if self.names and entry.canonical_name not in self.names:
             return False
@@ -44,10 +48,10 @@ class Profile:
     # Apply automatically at session init (see GatewayService.initialize).
     auto_apply: bool = False
 
-    def resolve(self, catalog: Catalog) -> list[str]:
+    async def resolve(self, catalog: Catalog) -> list[str]:
         """Return matching canonical names."""
         out: list[str] = []
-        for e in catalog.store.all():
+        for e in await catalog.store.all():
             if any(s.matches(e) for s in self.selectors):
                 out.append(e.canonical_name)
         return sorted(set(out))

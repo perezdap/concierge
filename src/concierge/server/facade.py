@@ -19,7 +19,8 @@ from __future__ import annotations
 
 import asyncio
 import json
-from typing import Any, AsyncIterator
+from collections.abc import AsyncIterator
+from typing import Any
 from urllib.parse import urlparse
 
 from fastapi import APIRouter, Header, HTTPException, Request, Response
@@ -29,10 +30,10 @@ from ..core.notifications import NotificationBus
 from ..core.session import SessionManager
 from ..core.types import JsonRpcRequest, Session
 from ..errors import (
-    GatewayError,
     JSONRPC_INTERNAL_ERROR,
     JSONRPC_INVALID_REQUEST,
     JSONRPC_PARSE_ERROR,
+    GatewayError,
     Unauthorized,
 )
 from ..gateway.service import SUPPORTED_PROTOCOL_VERSIONS, GatewayService
@@ -137,13 +138,15 @@ def build_facade_router(
     ) -> Session:
         # initialize is the only call where session_id may be absent.
         if session_header:
-            s = sessions.get(session_header)
+            s = await sessions.get(session_header)
             if s is None:
                 raise Unauthorized("unknown or expired session")
             return s
         if allow_create and method == "initialize":
             auth_res = await auth.authenticate(request)
-            return await sessions.create(tenant_id=auth_res.tenant_id, auth_subject=auth_res.subject)
+            return await sessions.create(
+                tenant_id=auth_res.tenant_id, auth_subject=auth_res.subject
+            )
         raise Unauthorized("missing MCP-Session-Id")
 
     @router.post(path)
@@ -220,7 +223,10 @@ def build_facade_router(
                 if mcp_session_id is None and rpc.method == "initialize":
                     new_session_id = session.session_id
 
-                result = await service.dispatch(session, rpc.method, rpc.params if isinstance(rpc.params, dict) else None)
+                result = await service.dispatch(
+                    session, rpc.method,
+                    rpc.params if isinstance(rpc.params, dict) else None,
+                )
                 responses.append(_jsonrpc_ok_response(rpc.id, result))
             except GatewayError as e:
                 responses.append(_jsonrpc_error_response(rpc.id, e.code, e.message, e.data))
@@ -268,7 +274,7 @@ def build_facade_router(
             raise HTTPException(status_code=401, detail=e.message)
         if not mcp_session_id:
             raise HTTPException(status_code=400, detail="MCP-Session-Id required")
-        session = sessions.get(mcp_session_id)
+        session = await sessions.get(mcp_session_id)
         if session is None:
             raise HTTPException(status_code=404, detail="unknown session")
 
@@ -279,12 +285,12 @@ def build_facade_router(
                 while True:
                     try:
                         msg = await asyncio.wait_for(queue.get(), timeout=20.0)
-                    except asyncio.TimeoutError:
+                    except TimeoutError:
                         # Keepalive comment — keeps proxies from closing.
                         yield b": keepalive\n\n"
                         continue
                     payload = json.dumps(msg, ensure_ascii=False)
-                    yield f"event: message\ndata: {payload}\n\n".encode("utf-8")
+                    yield f"event: message\ndata: {payload}\n\n".encode()
             except asyncio.CancelledError:
                 return
 

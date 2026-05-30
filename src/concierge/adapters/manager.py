@@ -11,11 +11,12 @@ side of the world. Per-session publishing happens elsewhere.
 from __future__ import annotations
 
 import asyncio
-import random
+import secrets
 from collections import OrderedDict
+from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
-from typing import TYPE_CHECKING, Any, Callable
+from datetime import UTC, datetime, timedelta
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from ..util.audit import AuditLogger
@@ -34,6 +35,7 @@ from ..errors import (
     UpstreamTimeout,
     UpstreamUnavailable,
 )
+from ..observability import trace_span
 from ..util.log import get_logger
 from ..util.sanitize import (
     make_canonical_name,
@@ -59,7 +61,7 @@ class _CircuitBreaker:
         until = self._open_until.get(server_id)
         if until is None:
             return False
-        if datetime.now(timezone.utc) >= until:
+        if datetime.now(UTC) >= until:
             self._open_until.pop(server_id, None)
             self._failures[server_id] = 0
             return False
@@ -73,7 +75,10 @@ class _CircuitBreaker:
         n = self._failures.get(server_id, 0) + 1
         self._failures[server_id] = n
         if n >= self.failure_threshold:
-            self._open_until[server_id] = datetime.now(timezone.utc) + self.cooldown
+            self._open_until[server_id] = datetime.now(UTC) + self.cooldown
+
+    def open_until(self, server_id: str) -> datetime | None:
+        return self._open_until.get(server_id)
 
 
 @dataclass
@@ -92,7 +97,7 @@ class AdapterManager:
         circuit_failure_threshold: int = 5,
         circuit_cooldown_s: float = 30.0,
         max_upstream_sessions: int = 256,
-        audit: "AuditLogger | None" = None,
+        audit: AuditLogger | None = None,
     ) -> None:
         self.catalog = catalog
         self.refresh_interval_s = refresh_interval_s
@@ -105,7 +110,7 @@ class AdapterManager:
         self._tasks: list[asyncio.Task[Any]] = []
         self._breaker = _CircuitBreaker(circuit_failure_threshold, circuit_cooldown_s)
         # "Data plane" pool for per_session upstreams, LRU-ordered.
-        self._pool: "OrderedDict[tuple[str, str], _PooledSession]" = OrderedDict()
+        self._pool: OrderedDict[tuple[str, str], _PooledSession] = OrderedDict()
         self._pool_pending: dict[tuple[str, str], asyncio.Task[UpstreamAdapter]] = {}
         self._pool_lock = asyncio.Lock()
 
@@ -145,6 +150,19 @@ class AdapterManager:
     def all(self) -> list[UpstreamAdapter]:
         return list(self._adapters.values())
 
+    def health_snapshot(self) -> list[dict[str, Any]]:
+        """Serializable upstream health for /readyz and /metrics."""
+        rows: list[dict[str, Any]] = []
+        for server_id, adapter in self._adapters.items():
+            health = adapter.health().model_dump(mode="json")
+            circuit_open_until = self._breaker.open_until(server_id)
+            health["circuit_open"] = self._breaker.is_open(server_id)
+            health["circuit_open_until"] = (
+                circuit_open_until.isoformat() if circuit_open_until is not None else None
+            )
+            rows.append(health)
+        return rows
+
     # ------------------------------------------------------------------
     async def start_all(self) -> None:
         for a in self._adapters.values():
@@ -154,7 +172,9 @@ class AdapterManager:
                 await self.refresh_server(a.server_id)
             except GatewayError as e:
                 _log.warning("adapter %s failed initial connect: %s", a.server_id, e)
-            self._tasks.append(asyncio.create_task(self._watch_changes(a), name=f"watch-{a.server_id}"))
+            self._tasks.append(
+                asyncio.create_task(self._watch_changes(a), name=f"watch-{a.server_id}")
+            )
         self._tasks.append(asyncio.create_task(self._refresh_loop(), name="catalog-refresh"))
 
     async def stop_all(self) -> None:
@@ -175,16 +195,16 @@ class AdapterManager:
         for a in self._adapters.values():
             try:
                 await a.close()
-            except Exception:  # noqa: BLE001
-                pass
+            except Exception as e:  # noqa: BLE001
+                _log.debug("ignored error closing adapter %s: %s", a.server_id, e)
 
     # ------------------------------------------------------------------
     @staticmethod
     async def _safe_close(adapter: UpstreamAdapter) -> None:
         try:
             await adapter.close()
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as e:  # noqa: BLE001
+            _log.debug("ignored error closing adapter %s: %s", adapter.server_id, e)
 
     async def _connect_with_backoff(
         self,
@@ -210,7 +230,7 @@ class AdapterManager:
                     raise
                 backoff = min(max_s, base_s * (2 ** (attempt - 1)))
                 # Full jitter in [0.5x, 1.0x] of the computed backoff.
-                delay = backoff * (0.5 + random.random() * 0.5)
+                delay = backoff * (0.5 + secrets.randbelow(500_001) / 1_000_000)
                 _log.warning(
                     "connect %s failed (attempt %d/%d), retrying in %.2fs: %s",
                     adapter.server_id, attempt, max_retries, delay, e,
@@ -247,13 +267,14 @@ class AdapterManager:
         if adapter is None:
             return 0
         if not adapter.health().connected:
-            # Try to reconnect lazily; if it still fails, mark down (keep entries, flag callable=false)
+            # Try to reconnect lazily; if it still fails, mark down
+            # (keep entries, flag callable=false)
             # and leave catalog as-is (no remove). Resilience per P1-5/T3.
             try:
                 await adapter.connect()
                 await adapter.initialize()
             except GatewayError:
-                self.catalog.set_callable_for_server(server_id, False)
+                await self.catalog.set_callable_for_server(server_id, False)
                 return 0
 
         entries: list[CatalogEntry] = []
@@ -271,7 +292,9 @@ class AdapterManager:
         try:
             resources = await adapter.list_resources()
             for r in resources:
-                entry = self._normalize(server_id, adapter.transport, PrimitiveType.RESOURCE, r, meta)
+                entry = self._normalize(
+                    server_id, adapter.transport, PrimitiveType.RESOURCE, r, meta
+                )
                 if entry is not None:
                     entries.append(entry)
         except GatewayError:
@@ -286,7 +309,7 @@ class AdapterManager:
         except GatewayError:
             pass
 
-        self.catalog.replace_server(server_id, entries)
+        await self.catalog.replace_server(server_id, entries)
         return len(entries)
 
     def _normalize(
@@ -367,7 +390,7 @@ class AdapterManager:
         async with self._pool_lock:
             existing = self._pool.get(key)
             if existing is not None:
-                existing.last_used = datetime.now(timezone.utc)
+                existing.last_used = datetime.now(UTC)
                 self._pool.move_to_end(key)
                 return existing.adapter
 
@@ -379,11 +402,13 @@ class AdapterManager:
                     name=f"connect-{server_id}-{router_session_id}",
                 )
                 self._pool_pending[key] = pending
-                pending.add_done_callback(
-                    lambda task, pending_key=key: asyncio.create_task(
-                        self._forget_pending_session(pending_key, task)
-                    )
-                )
+                def forget_pending(
+                    task: asyncio.Task[UpstreamAdapter],
+                    pending_key: tuple[str, str] = key,
+                ) -> None:
+                    asyncio.create_task(self._forget_pending_session(pending_key, task))
+
+                pending.add_done_callback(forget_pending)
 
         return await asyncio.shield(pending)
 
@@ -419,12 +444,12 @@ class AdapterManager:
             async with self._pool_lock:
                 existing = self._pool.get(key)
                 if existing is not None:
-                    existing.last_used = datetime.now(timezone.utc)
+                    existing.last_used = datetime.now(UTC)
                     self._pool.move_to_end(key)
                     adapter_to_close = adapter
                     result = existing.adapter
                 else:
-                    self._pool[key] = _PooledSession(adapter=adapter, last_used=datetime.now(timezone.utc))
+                    self._pool[key] = _PooledSession(adapter=adapter, last_used=datetime.now(UTC))
                     adapter_transferred = True
                     self._pool.move_to_end(key)
                     if self._audit is not None:
@@ -512,12 +537,19 @@ class AdapterManager:
             raise UpstreamCircuitOpen(server_id)
         # Resilience (T3/P1-5): if catalog has marked this server non-callable (upstream down),
         # return clear error immediately (no hang, no attempt on dead adapter).
-        entry = self.catalog.get(f"{server_id}__{upstream_name}")  # best-effort; real callers use canonical via publishing
+        entry = await self.catalog.get(
+            f"{server_id}__{upstream_name}"
+        )  # best-effort; real callers use canonical via publishing
         if entry is not None and not getattr(entry, "callable", True):
             raise UpstreamUnavailable(f"upstream {server_id} is down (callable=false)")
         try:
             adapter = await self._resolve_session_adapter(server_id, router_session_id)
-            result = await adapter.call_tool(upstream_name, arguments)
+            with trace_span(
+                "concierge.upstream.call_tool",
+                server_id=server_id,
+                upstream_name=upstream_name,
+            ):
+                result = await adapter.call_tool(upstream_name, arguments)
             self._breaker.record_success(server_id)
             return result
         except (UpstreamUnavailable, UpstreamTimeout):

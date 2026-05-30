@@ -36,6 +36,10 @@ class NotificationBus:
     def drop(self, session_id: str) -> None:
         self._queues.pop(session_id, None)
 
+    def queue_depths(self) -> dict[str, int]:
+        """Current per-session queue depths for readiness/metrics endpoints."""
+        return {sid: q.qsize() for sid, q in self._queues.items()}
+
     def publish(self, session_id: str, method: str, params: dict[str, Any] | None = None) -> None:
         now = time.monotonic()
         key = (session_id, method)
@@ -43,7 +47,7 @@ class NotificationBus:
             return
         self._last_emit[key] = now
         q = self.queue_for(session_id)
-        msg = {"jsonrpc": "2.0", "method": method}
+        msg: dict[str, Any] = {"jsonrpc": "2.0", "method": method}
         if params is not None:
             msg["params"] = params
         # asyncio.Queue.put_nowait — no awaiting in publishers. If the consumer

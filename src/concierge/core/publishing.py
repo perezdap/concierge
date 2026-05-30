@@ -13,7 +13,7 @@ canonical_names are exposed per session and emits list_changed notifications.
 """
 from __future__ import annotations
 
-from typing import Iterable
+from collections.abc import Iterable
 
 from ..errors import NotPublished, UnknownPrimitive
 from .catalog import Catalog
@@ -34,7 +34,7 @@ class PublishingService:
     # ------------------------------------------------------------------
     # mutate
     # ------------------------------------------------------------------
-    def enable(
+    async def enable(
         self,
         session: Session,
         canonical_names: Iterable[str],
@@ -50,7 +50,7 @@ class PublishingService:
         skipped: list[str] = []
         touched: set[PrimitiveType] = set()
         for name in canonical_names:
-            entry = self.catalog.get(name)
+            entry = await self.catalog.get(name)
             if entry is None:
                 skipped.append(name)
                 continue
@@ -68,7 +68,7 @@ class PublishingService:
         self._emit_changed(session.session_id, touched)
         return enabled, skipped
 
-    def disable(
+    async def disable(
         self,
         session: Session,
         canonical_names: Iterable[str],
@@ -76,7 +76,7 @@ class PublishingService:
         removed: list[str] = []
         touched: set[PrimitiveType] = set()
         for name in canonical_names:
-            entry = self.catalog.get(name)
+            entry = await self.catalog.get(name)
             ptype: PrimitiveType | None = entry.primitive_type if entry else None
             # Try all buckets in case catalog was purged.
             for cand in [ptype] if ptype else list(PrimitiveType):
@@ -89,7 +89,7 @@ class PublishingService:
         self._emit_changed(session.session_id, touched)
         return removed
 
-    def disable_all(self, session: Session) -> int:
+    async def disable_all(self, session: Session) -> int:
         n = 0
         for ptype in PrimitiveType:
             bucket = session.published_set(ptype)
@@ -101,30 +101,32 @@ class PublishingService:
     # ------------------------------------------------------------------
     # query
     # ------------------------------------------------------------------
-    def is_published(self, session: Session, canonical_name: str, ptype: PrimitiveType) -> bool:
+    async def is_published(
+        self, session: Session, canonical_name: str, ptype: PrimitiveType
+    ) -> bool:
         return canonical_name in session.published_set(ptype)
 
-    def list_published(
+    async def list_published(
         self, session: Session, ptype: PrimitiveType
     ) -> list[CatalogEntry]:
         bucket = session.published_set(ptype)
         out: list[CatalogEntry] = []
         for name in bucket:
-            e = self.catalog.get(name)
+            e = await self.catalog.get(name)
             if e is not None:
                 out.append(e)
         out.sort(key=lambda x: x.canonical_name)
         return out
 
-    def require_published(
+    async def require_published(
         self, session: Session, canonical_name: str, ptype: PrimitiveType
     ) -> CatalogEntry:
-        if not self.is_published(session, canonical_name, ptype):
+        if not await self.is_published(session, canonical_name, ptype):
             # Distinguish "unknown" from "not published" for clearer errors.
-            if self.catalog.get(canonical_name) is None:
+            if await self.catalog.get(canonical_name) is None:
                 raise UnknownPrimitive(f"no such {ptype.value}: {canonical_name}")
             raise NotPublished(f"{ptype.value} {canonical_name!r} is not enabled in this session")
-        entry = self.catalog.get(canonical_name)
+        entry = await self.catalog.get(canonical_name)
         if entry is None:
             # Race: cataloged then evicted. Treat as not-published.
             raise NotPublished(canonical_name)

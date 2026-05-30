@@ -9,14 +9,7 @@ Per Builder 3 assignment (Coord 2):
 Tests written FIRST (fail), then min impl to green.
 """
 
-import pytest
-
-from concierge.util.output_filter import (
-    OutputFilter,
-    SecretRedactor,
-    LengthCapper,
-    ContentTypeFilter,
-)
+from concierge.util.output_filter import LengthCapper, OutputFilter, SecretRedactor
 
 
 def test_output_filter_redacts_fake_secret():

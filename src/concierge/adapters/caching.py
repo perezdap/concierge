@@ -79,10 +79,15 @@ class CachingAdapter(UpstreamAdapter):
             self._cache[key] = (time.monotonic() + self.default_ttl, val)
         return val
 
-    async def get_prompt(self, name: str, arguments: dict[str, Any] | None = None) -> dict[str, Any]:
+    async def get_prompt(
+        self, name: str, arguments: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
         if not self.cache_prompts:
             return await self.inner.get_prompt(name, arguments)
-        key = ("prompt", f"{name}:{hash(frozenset((arguments or {}).items())) if arguments else ''}")
+        key = (
+            "prompt",
+            f"{name}:{hash(frozenset((arguments or {}).items())) if arguments else ''}",
+        )
         async with self._lock:
             now = time.monotonic()
             if key in self._cache:

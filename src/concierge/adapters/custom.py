@@ -10,15 +10,17 @@ and then setting `transport: custom` + `custom_kind: my-transport` in config.
 """
 from __future__ import annotations
 
-from typing import Any, Callable, Type
+from collections.abc import Callable
+from typing import Any
 
 from .base import UpstreamAdapter
-
 
 _FACTORIES: dict[str, Callable[..., UpstreamAdapter]] = {}
 
 
-def register_custom_adapter(kind: str, factory: Callable[..., UpstreamAdapter] | Type[UpstreamAdapter]) -> None:
+def register_custom_adapter(
+    kind: str, factory: Callable[..., UpstreamAdapter] | type[UpstreamAdapter]
+) -> None:
     _FACTORIES[kind] = factory
 
 

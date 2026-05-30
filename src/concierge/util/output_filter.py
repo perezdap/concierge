@@ -78,7 +78,10 @@ class LengthCapper:
 
 
 class ContentTypeFilter:
-    """Drops disallowed content types (e.g. images, binary) from results. Conservative allow-list."""
+    """
+    Drops disallowed content types (e.g. images, binary) from results.
+    Conservative allow-list.
+    """
 
     def __init__(self, allowed: set[str] | None = None) -> None:
         self.allowed = allowed or {"text", "json", "markdown"}

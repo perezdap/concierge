@@ -6,7 +6,6 @@ from typing import Any
 
 from ..errors import UpstreamProtocolError
 
-
 _id_counter = itertools.count(1)
 
 
@@ -14,7 +13,9 @@ def next_request_id() -> int:
     return next(_id_counter)
 
 
-def build_request(method: str, params: dict[str, Any] | None = None, *, rid: int | None = None) -> dict[str, Any]:
+def build_request(
+    method: str, params: dict[str, Any] | None = None, *, rid: int | None = None
+) -> dict[str, Any]:
     return {
         "jsonrpc": "2.0",
         "id": rid if rid is not None else next_request_id(),

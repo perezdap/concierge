@@ -9,8 +9,9 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-from datetime import datetime, timezone
-from typing import Any, AsyncIterator
+from collections.abc import AsyncIterator
+from datetime import UTC, datetime
+from typing import Any
 
 from ..core.types import AdapterHealth, TransportType
 from ..errors import UpstreamProtocolError, UpstreamTimeout, UpstreamUnavailable
@@ -66,13 +67,17 @@ class StdioAdapter(UpstreamAdapter):
             self._failures += 1
             raise UpstreamUnavailable(f"could not spawn {self.command!r}: {e}") from e
 
-        self._reader_task = asyncio.create_task(self._read_loop(), name=f"stdio-read-{self.server_id}")
+        self._reader_task = asyncio.create_task(
+            self._read_loop(), name=f"stdio-read-{self.server_id}"
+        )
         # Continuously drain stderr. An undrained stderr pipe fills its OS buffer
         # and blocks the child mid-write — a deadlock that also stalls stdout
         # (and thus every pending request). Draining keeps the child flowing.
-        self._stderr_task = asyncio.create_task(self._drain_stderr(), name=f"stdio-stderr-{self.server_id}")
+        self._stderr_task = asyncio.create_task(
+            self._drain_stderr(), name=f"stdio-stderr-{self.server_id}"
+        )
         self._connected = True
-        self._last_connected_at = datetime.now(timezone.utc)
+        self._last_connected_at = datetime.now(UTC)
         self._failures = 0
 
     async def close(self) -> None:
@@ -82,7 +87,7 @@ class StdioAdapter(UpstreamAdapter):
                 self._proc.terminate()
                 try:
                     await asyncio.wait_for(self._proc.wait(), timeout=3)
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     self._proc.kill()
             except ProcessLookupError:
                 pass
@@ -97,10 +102,12 @@ class StdioAdapter(UpstreamAdapter):
 
     # ------------------------------------------------------------------
     async def _read_loop(self) -> None:
-        assert self._proc and self._proc.stdout
+        proc = self._proc
+        if proc is None or proc.stdout is None:
+            raise UpstreamUnavailable("stdio process not started")
         try:
             while True:
-                line = await self._proc.stdout.readline()
+                line = await proc.stdout.readline()
                 if not line:
                     break
                 try:
@@ -181,7 +188,7 @@ class StdioAdapter(UpstreamAdapter):
 
         try:
             response = await asyncio.wait_for(fut, timeout=self.request_timeout_s)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             self._pending.pop(req["id"], None)
             self._failures += 1
             raise UpstreamTimeout(f"{self.server_id}.{method}")
@@ -233,7 +240,9 @@ class StdioAdapter(UpstreamAdapter):
         result = await self._request("resources/read", {"uri": uri})
         return result if isinstance(result, dict) else {}
 
-    async def get_prompt(self, name: str, arguments: dict[str, Any] | None = None) -> dict[str, Any]:
+    async def get_prompt(
+        self, name: str, arguments: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
         result = await self._request("prompts/get", {"name": name, "arguments": arguments or {}})
         return result if isinstance(result, dict) else {}
 

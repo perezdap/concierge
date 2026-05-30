@@ -10,9 +10,8 @@ Postgres / Redis later.
 """
 from __future__ import annotations
 
+import builtins
 from abc import ABC, abstractmethod
-from collections.abc import Iterable
-from typing import Optional
 
 from .types import CatalogEntry, PrimitiveType
 
@@ -21,41 +20,41 @@ class CatalogStore(ABC):
     """Storage interface — write once, read many."""
 
     @abstractmethod
-    def upsert(self, entry: CatalogEntry) -> None: ...
+    async def upsert(self, entry: CatalogEntry) -> None: ...
 
     @abstractmethod
-    def remove(self, canonical_name: str) -> None: ...
+    async def remove(self, canonical_name: str) -> None: ...
 
     @abstractmethod
-    def remove_by_server(self, server_id: str) -> int: ...
+    async def remove_by_server(self, server_id: str) -> int: ...
 
     @abstractmethod
-    def get(self, canonical_name: str) -> Optional[CatalogEntry]: ...
+    async def get(self, canonical_name: str) -> CatalogEntry | None: ...
 
     @abstractmethod
-    def all(self) -> Iterable[CatalogEntry]: ...
+    async def all(self) -> list[CatalogEntry]: ...
 
 
 class InMemoryCatalogStore(CatalogStore):
     def __init__(self) -> None:
         self._by_name: dict[str, CatalogEntry] = {}
 
-    def upsert(self, entry: CatalogEntry) -> None:
+    async def upsert(self, entry: CatalogEntry) -> None:
         self._by_name[entry.canonical_name] = entry
 
-    def remove(self, canonical_name: str) -> None:
+    async def remove(self, canonical_name: str) -> None:
         self._by_name.pop(canonical_name, None)
 
-    def remove_by_server(self, server_id: str) -> int:
+    async def remove_by_server(self, server_id: str) -> int:
         victims = [n for n, e in self._by_name.items() if e.server_id == server_id]
         for n in victims:
             self._by_name.pop(n, None)
         return len(victims)
 
-    def get(self, canonical_name: str) -> Optional[CatalogEntry]:
+    async def get(self, canonical_name: str) -> CatalogEntry | None:
         return self._by_name.get(canonical_name)
 
-    def all(self) -> Iterable[CatalogEntry]:
+    async def all(self) -> list[CatalogEntry]:
         return list(self._by_name.values())
 
 
@@ -69,36 +68,36 @@ class Catalog:
         self.store = store or InMemoryCatalogStore()
 
     # ----- writes -----
-    def upsert(self, entry: CatalogEntry) -> None:
-        self.store.upsert(entry)
+    async def upsert(self, entry: CatalogEntry) -> None:
+        await self.store.upsert(entry)
 
-    def remove(self, canonical_name: str) -> None:
-        self.store.remove(canonical_name)
+    async def remove(self, canonical_name: str) -> None:
+        await self.store.remove(canonical_name)
 
-    def replace_server(self, server_id: str, entries: list[CatalogEntry]) -> None:
+    async def replace_server(self, server_id: str, entries: list[CatalogEntry]) -> None:
         """Atomic-ish refresh of all entries for one upstream server."""
-        self.store.remove_by_server(server_id)
+        await self.store.remove_by_server(server_id)
         for e in entries:
-            self.store.upsert(e)
+            await self.store.upsert(e)
 
-    def set_callable_for_server(self, server_id: str, value: bool) -> int:
+    async def set_callable_for_server(self, server_id: str, value: bool) -> int:
         """Set callable flag on all known entries for a server (resilience marking).
         Keeps entries (does not remove). Returns count of entries updated.
         """
         updated = 0
-        for e in list(self.store.all()):
+        for e in list(await self.store.all()):
             if e.server_id == server_id and getattr(e, "callable", True) != value:
                 # Re-upsert a copy with updated flag (pydantic immutable update pattern)
                 new_e = e.model_copy(update={"callable": value})
-                self.store.upsert(new_e)
+                await self.store.upsert(new_e)
                 updated += 1
         return updated
 
     # ----- reads -----
-    def get(self, canonical_name: str) -> Optional[CatalogEntry]:
-        return self.store.get(canonical_name)
+    async def get(self, canonical_name: str) -> CatalogEntry | None:
+        return await self.store.get(canonical_name)
 
-    def list(
+    async def list(
         self,
         *,
         query: str | None = None,
@@ -117,7 +116,7 @@ class Catalog:
         risk_cap = risk_order.get(max_risk, 3) if max_risk else 3
 
         out: list[CatalogEntry] = []
-        for e in self.store.all():
+        for e in await self.store.all():
             if names is not None and e.canonical_name not in names:
                 continue
             if server and e.server_id != server:
@@ -146,8 +145,8 @@ class Catalog:
         out.sort(key=lambda e: e.canonical_name)
         return out[offset : offset + limit]
 
-    def servers(self) -> list[str]:
-        return sorted({e.server_id for e in self.store.all()})
+    async def servers(self) -> builtins.list[str]:
+        return sorted({e.server_id for e in await self.store.all()})
 
-    def count(self) -> int:
-        return sum(1 for _ in self.store.all())
+    async def count(self) -> int:
+        return sum(1 for _ in await self.store.all())

@@ -111,9 +111,19 @@ class SessionPoolConfig(BaseModel):
     max_upstream_sessions: int = Field(default=256, gt=0)
 
 
+class StorageConfig(BaseModel):
+    """P1-2: persistent/shared store selection."""
+    catalog_store: Literal["memory", "sqlite", "postgres"] = "memory"
+    catalog_sqlite_path: str | None = None
+    catalog_postgres_url: str | None = None
+    session_store: Literal["memory", "redis"] = "memory"
+    redis_url: str | None = None
+
+
 class PayloadConfig(BaseModel):
     """Controls outbound payload trimming toward downstream LLM clients."""
-    # Slim published-tool input schemas in tools/list (model-facing surface). Opt-in for compatibility.
+    # Slim published-tool input schemas in tools/list (model-facing surface).
+    # Opt-in for compatibility.
     slim_tools_list: bool = False
     max_schema_description_chars: int = Field(default=160, ge=0)
     drop_schema_examples: bool = True
@@ -139,6 +149,16 @@ class CacheConfig(BaseModel):
     cache_prompts: bool = False
 
 
+class ObservabilityConfig(BaseModel):
+    """P1-6: health/readiness, Prometheus metrics, traces, and audit sinks."""
+    enable_metrics: bool = True
+    metrics_path: str = "/metrics"
+    health_path: str = "/healthz"
+    ready_path: str = "/readyz"
+    audit_http_sink_url: str | None = None
+    audit_http_timeout_s: float = Field(default=2.0, gt=0)
+
+
 class GatewayConfig(BaseModel):
     gateway: GatewayHttpConfig = Field(default_factory=GatewayHttpConfig)
     auth: AuthConfig = Field(default_factory=AuthConfig)
@@ -146,9 +166,11 @@ class GatewayConfig(BaseModel):
     profiles: list[ProfileConfig] = Field(default_factory=list)
     policy: PolicyConfig = Field(default_factory=PolicyConfig)
     session_pool: SessionPoolConfig = Field(default_factory=SessionPoolConfig)
+    storage: StorageConfig = Field(default_factory=StorageConfig)  # P1-2
     payload: PayloadConfig = Field(default_factory=PayloadConfig)
     output: OutputConfig = Field(default_factory=OutputConfig)  # P1-8 additive
     cache: CacheConfig = Field(default_factory=CacheConfig)      # P1-8 additive
+    observability: ObservabilityConfig = Field(default_factory=ObservabilityConfig)
     log_level: str = "INFO"
     catalog_refresh_interval_s: float = 300.0
 

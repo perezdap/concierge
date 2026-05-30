@@ -26,6 +26,7 @@ from ..errors import (
     MethodNotFound,
     UnknownPrimitive,
 )
+from ..observability import trace_span
 from ..policy.engine import PolicyEngine
 from ..util.audit import AuditLogger
 from ..util.log import get_logger
@@ -110,7 +111,7 @@ class GatewayService:
             client=session.client_info.get("name"),
             protocol=session.protocol_version,
         )
-        self._apply_auto_profiles(session)
+        await self._apply_auto_profiles(session)
         return {
             "protocolVersion": agreed_version,
             "serverInfo": {"name": "concierge", "version": "0.1.0"},
@@ -122,15 +123,15 @@ class GatewayService:
             },
         }
 
-    def _apply_auto_profiles(self, session: Session) -> None:
+    async def _apply_auto_profiles(self, session: Session) -> None:
         """Publish auto_apply profiles' tools at session init.
 
         This makes proxied tools present in the very first tools/list, so clients
         that don't react to notifications/tools/list_changed can still reach them.
         """
         for profile in self.profiles.auto_apply_profiles():
-            names = profile.resolve(self.catalog)
-            enabled, _ = self.publishing.enable(session, names, by=f"profile:{profile.name}")
+            names = await profile.resolve(self.catalog)
+            enabled, _ = await self.publishing.enable(session, names, by=f"profile:{profile.name}")
             if profile.name not in session.active_profiles:
                 session.active_profiles.append(profile.name)
             if enabled:
@@ -141,7 +142,7 @@ class GatewayService:
         tools: list[dict[str, Any]] = []
         for p in self.primitives.values():
             tools.append(p.as_tool_descriptor())
-        for entry in self.publishing.list_published(session, PrimitiveType.TOOL):
+        for entry in await self.publishing.list_published(session, PrimitiveType.TOOL):
             schema = entry.input_schema or {"type": "object"}
             if self.payload.slim_tools_list:
                 schema = slim_schema(
@@ -159,7 +160,7 @@ class GatewayService:
 
     async def resources_list(self, session: Session) -> dict[str, Any]:
         resources = []
-        for entry in self.publishing.list_published(session, PrimitiveType.RESOURCE):
+        for entry in await self.publishing.list_published(session, PrimitiveType.RESOURCE):
             resources.append({
                 "uri": entry.upstream_name,                # upstream URI preserved
                 "name": entry.canonical_name,
@@ -169,7 +170,7 @@ class GatewayService:
 
     async def prompts_list(self, session: Session) -> dict[str, Any]:
         prompts = []
-        for entry in self.publishing.list_published(session, PrimitiveType.PROMPT):
+        for entry in await self.publishing.list_published(session, PrimitiveType.PROMPT):
             prompts.append({
                 "name": entry.canonical_name,
                 "description": entry.short_description,
@@ -196,15 +197,21 @@ class GatewayService:
                 raise InvalidParams(str(e))
 
         # Upstream-routed primitive — must be published and policy-cleared.
-        entry = self.publishing.require_published(session, name, PrimitiveType.TOOL)
+        entry = await self.publishing.require_published(session, name, PrimitiveType.TOOL)
         await self.policy.authorize_call(session, entry, args)
 
         t0 = time.perf_counter()
         try:
-            result = await self.adapters.call_tool(
-                entry.server_id, entry.upstream_name, args,
-                router_session_id=session.session_id,
-            )
+            with trace_span(
+                "concierge.gateway.tools_call",
+                session_id=session.session_id,
+                tool_name=name,
+                server_id=entry.server_id,
+            ):
+                result = await self.adapters.call_tool(
+                    entry.server_id, entry.upstream_name, args,
+                    router_session_id=session.session_id,
+                )
             # P1-8 additive output filter hook (secret redaction etc on results)
             if self.output_filter is not None and hasattr(self.output_filter, "apply"):
                 result = self.output_filter.apply(result)
@@ -217,7 +224,9 @@ class GatewayService:
             return result
         except GatewayError as e:
             latency = (time.perf_counter() - t0) * 1000
-            self.audit.tool_called(session.session_id, name, entry.server_id, False, latency, e.code)
+            self.audit.tool_called(
+                session.session_id, name, entry.server_id, False, latency, e.code
+            )
             raise
 
     async def resources_read(self, session: Session, params: dict[str, Any]) -> dict[str, Any]:
@@ -227,16 +236,18 @@ class GatewayService:
         if not isinstance(canonical, str):
             raise InvalidParams("resources/read: name or uri required")
         # Allow lookup by either canonical name or upstream URI.
-        entry = self.catalog.get(canonical)
+        entry = await self.catalog.get(canonical)
         if entry is None:
             # Fall back: scan for matching upstream uri among published resources.
-            for e in self.publishing.list_published(session, PrimitiveType.RESOURCE):
+            for e in await self.publishing.list_published(session, PrimitiveType.RESOURCE):
                 if e.upstream_name == canonical:
                     entry = e
                     break
         if entry is None:
             raise UnknownPrimitive(canonical)
-        entry = self.publishing.require_published(session, entry.canonical_name, PrimitiveType.RESOURCE)
+        entry = await self.publishing.require_published(
+            session, entry.canonical_name, PrimitiveType.RESOURCE
+        )
         return await self.adapters.read_resource(
             entry.server_id, entry.upstream_name, router_session_id=session.session_id,
         )
@@ -247,7 +258,7 @@ class GatewayService:
         name = params.get("name")
         if not isinstance(name, str):
             raise InvalidParams("prompts/get: name required")
-        entry = self.publishing.require_published(session, name, PrimitiveType.PROMPT)
+        entry = await self.publishing.require_published(session, name, PrimitiveType.PROMPT)
         return await self.adapters.get_prompt(
             entry.server_id, entry.upstream_name, params.get("arguments") or {},
             router_session_id=session.session_id,
@@ -256,20 +267,26 @@ class GatewayService:
     # ------------------------------------------------------------------
     async def dispatch(self, session: Session, method: str, params: dict[str, Any] | None) -> Any:
         params = params if isinstance(params, dict) else {}
-        if method == "initialize":
-            return await self.initialize(session, params)
-        if method == "tools/list":
-            return await self.tools_list(session)
-        if method == "tools/call":
-            return await self.tools_call(session, params)
-        if method == "resources/list":
-            return await self.resources_list(session)
-        if method == "resources/read":
-            return await self.resources_read(session, params)
-        if method == "prompts/list":
-            return await self.prompts_list(session)
-        if method == "prompts/get":
-            return await self.prompts_get(session, params)
-        if method == "ping":
-            return {}
-        raise MethodNotFound(f"unknown method: {method}")
+        with trace_span(
+            "concierge.gateway.dispatch",
+            session_id=session.session_id,
+            tenant_id=session.tenant_id,
+            method=method,
+        ):
+            if method == "initialize":
+                return await self.initialize(session, params)
+            if method == "tools/list":
+                return await self.tools_list(session)
+            if method == "tools/call":
+                return await self.tools_call(session, params)
+            if method == "resources/list":
+                return await self.resources_list(session)
+            if method == "resources/read":
+                return await self.resources_read(session, params)
+            if method == "prompts/list":
+                return await self.prompts_list(session)
+            if method == "prompts/get":
+                return await self.prompts_get(session, params)
+            if method == "ping":
+                return {}
+            raise MethodNotFound(f"unknown method: {method}")

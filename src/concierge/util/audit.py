@@ -8,16 +8,26 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Any
+from typing import Any, Protocol
 
 from .redact import redact
 
 _audit = logging.getLogger("concierge.audit")
 
 
+class AuditSink(Protocol):
+    def emit(self, event: str, payload: dict[str, Any]) -> None: ...
+
+
 class AuditLogger:
-    def __init__(self, logger: logging.Logger = _audit) -> None:
+    def __init__(
+        self,
+        logger: logging.Logger = _audit,
+        *,
+        sinks: list[AuditSink] | None = None,
+    ) -> None:
         self.logger = logger
+        self.sinks = sinks or []
 
     def emit(self, event: str, **fields: Any) -> None:
         payload = {
@@ -26,6 +36,15 @@ class AuditLogger:
             **redact(fields),
         }
         self.logger.info(event, extra={"extra_data": payload})
+        for sink in self.sinks:
+            try:
+                sink.emit(event, payload)
+            except Exception as e:  # noqa: BLE001
+                self.logger.warning(
+                    "audit sink %s failed: %s",
+                    sink.__class__.__name__,
+                    e,
+                )
 
     # Convenience helpers — one method per audited transition.
     def session_created(self, session_id: str, **f: Any) -> None:

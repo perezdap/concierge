@@ -15,7 +15,8 @@ Design notes
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Any, AsyncIterator
+from collections.abc import AsyncIterator
+from typing import Any
 
 from ..core.types import AdapterHealth, TransportType
 
@@ -50,7 +51,9 @@ class UpstreamAdapter(ABC):
     async def read_resource(self, uri: str) -> dict[str, Any]: ...
 
     @abstractmethod
-    async def get_prompt(self, name: str, arguments: dict[str, Any] | None = None) -> dict[str, Any]: ...
+    async def get_prompt(
+        self, name: str, arguments: dict[str, Any] | None = None
+    ) -> dict[str, Any]: ...
 
     async def list_changed_events(self) -> AsyncIterator[str]:
         """Yields one of 'tools' | 'resources' | 'prompts' when upstream signals

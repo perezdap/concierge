@@ -65,9 +65,9 @@ async def _svc(*, auto_apply_readonly: bool = False) -> GatewayService:
     adapters.register(MultiToolAdapter("demo"), default_tags=["read"])
     await adapters.refresh_server("demo")
     # Manually tag beta as a "write" tool so a profile can select a subset.
-    beta = catalog.get("demo__beta")
+    beta = await catalog.get("demo__beta")
     beta.tags = ["write"]
-    catalog.upsert(beta)
+    await catalog.upsert(beta)
 
     audit = AuditLogger()
     policy = PolicyEngine(TokenBucketRateLimiter(), DenyByDefaultApprovalBroker(), audit)
@@ -153,8 +153,8 @@ async def test_rapid_enable_disable_coalesces_to_one():
     publishing = PublishingService(svc.catalog, bus)
     s = await svc.sessions.create()
 
-    publishing.enable(s, ["demo__alpha"])
-    publishing.disable(s, ["demo__alpha"])   # rapid tools mutation
+    await publishing.enable(s, ["demo__alpha"])
+    await publishing.disable(s, ["demo__alpha"])   # rapid tools mutation
     assert bus.queue_for(s.session_id).qsize() == 1
 
 
