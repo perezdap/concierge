@@ -121,6 +121,24 @@ class PayloadConfig(BaseModel):
     max_result_bytes: int = Field(default=0, ge=0)
 
 
+class OutputConfig(BaseModel):
+    """P1-8: response-side output filtering (secret/PII redaction, caps, content-type).
+    Conservative defaults: disabled (pass-through) until operator explicitly enables.
+    """
+    enable_output_filter: bool = False
+    max_result_bytes: int = Field(default=8192, ge=0)  # soft cap for filter
+    redact_secrets: bool = True
+    allow_content_types: list[str] = Field(default_factory=lambda: ["text", "json", "markdown"])
+
+
+class CacheConfig(BaseModel):
+    """P1-8: TTL caching for idempotent reads (resources/prompts). Disabled by default."""
+    enable_cache: bool = False
+    default_ttl_s: float = Field(default=300.0, gt=0)
+    cache_resources: bool = True
+    cache_prompts: bool = False
+
+
 class GatewayConfig(BaseModel):
     gateway: GatewayHttpConfig = Field(default_factory=GatewayHttpConfig)
     auth: AuthConfig = Field(default_factory=AuthConfig)
@@ -129,6 +147,8 @@ class GatewayConfig(BaseModel):
     policy: PolicyConfig = Field(default_factory=PolicyConfig)
     session_pool: SessionPoolConfig = Field(default_factory=SessionPoolConfig)
     payload: PayloadConfig = Field(default_factory=PayloadConfig)
+    output: OutputConfig = Field(default_factory=OutputConfig)  # P1-8 additive
+    cache: CacheConfig = Field(default_factory=CacheConfig)      # P1-8 additive
     log_level: str = "INFO"
     catalog_refresh_interval_s: float = 300.0
 

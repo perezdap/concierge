@@ -33,6 +33,12 @@ from ..util.payload import PayloadOptions, cap_result_text, slim_schema
 from .primitives import GatewayPrimitive, builtin_primitives
 from .profiles import ProfileRegistry
 
+# P1-8 additive (safe default None = pass-through)
+try:
+    from ..util.output_filter import OutputFilter
+except Exception:  # noqa: BLE001
+    OutputFilter = None  # type: ignore[misc,assignment]
+
 _log = get_logger("concierge.service")
 
 
@@ -76,6 +82,7 @@ class GatewayService:
         bus: NotificationBus,
         profiles: ProfileRegistry,
         payload: PayloadOptions | None = None,
+        output_filter: Any | None = None,  # P1-8 additive, None = disabled (conservative)
     ) -> None:
         self.catalog = catalog
         self.publishing = publishing
@@ -86,6 +93,7 @@ class GatewayService:
         self.bus = bus
         self.profiles = profiles
         self.payload = payload or PayloadOptions()
+        self.output_filter = output_filter  # may be OutputFilter instance or None
         self.primitives: dict[str, GatewayPrimitive] = builtin_primitives()
 
     # ------------------------------------------------------------------
@@ -197,6 +205,9 @@ class GatewayService:
                 entry.server_id, entry.upstream_name, args,
                 router_session_id=session.session_id,
             )
+            # P1-8 additive output filter hook (secret redaction etc on results)
+            if self.output_filter is not None and hasattr(self.output_filter, "apply"):
+                result = self.output_filter.apply(result)
             result = cap_result_text(result, self.payload.max_result_bytes)
             latency = (time.perf_counter() - t0) * 1000
             self.audit.tool_called(
