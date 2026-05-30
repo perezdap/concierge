@@ -23,7 +23,7 @@ Policy (explicit, see :func:`_origin_allowed`):
 """
 from __future__ import annotations
 
-from typing import Iterable
+from collections.abc import Iterable
 from urllib.parse import urlparse
 
 from starlette.requests import Request
