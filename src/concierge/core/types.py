@@ -87,6 +87,11 @@ class CatalogEntry(BaseModel):
     # state
     cataloged_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
+    # resilience (P1-5 / T3): false when upstream is down (kept in catalog, not removed;
+    # mirrors the existing callable flag on PublishedPrimitive). Discovery/publishing/service
+    # layers can surface clear errors instead of attempting calls or dropping from results.
+    callable: bool = True
+
 
 # ---------------------------------------------------------------------------
 # Session

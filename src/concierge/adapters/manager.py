@@ -247,11 +247,13 @@ class AdapterManager:
         if adapter is None:
             return 0
         if not adapter.health().connected:
-            # Try to reconnect lazily; if it still fails, leave catalog as-is.
+            # Try to reconnect lazily; if it still fails, mark down (keep entries, flag callable=false)
+            # and leave catalog as-is (no remove). Resilience per P1-5/T3.
             try:
                 await adapter.connect()
                 await adapter.initialize()
             except GatewayError:
+                self.catalog.set_callable_for_server(server_id, False)
                 return 0
 
         entries: list[CatalogEntry] = []
@@ -508,6 +510,11 @@ class AdapterManager:
     ) -> dict[str, Any]:
         if self._breaker.is_open(server_id):
             raise UpstreamCircuitOpen(server_id)
+        # Resilience (T3/P1-5): if catalog has marked this server non-callable (upstream down),
+        # return clear error immediately (no hang, no attempt on dead adapter).
+        entry = self.catalog.get(f"{server_id}__{upstream_name}")  # best-effort; real callers use canonical via publishing
+        if entry is not None and not getattr(entry, "callable", True):
+            raise UpstreamUnavailable(f"upstream {server_id} is down (callable=false)")
         try:
             adapter = await self._resolve_session_adapter(server_id, router_session_id)
             result = await adapter.call_tool(upstream_name, arguments)

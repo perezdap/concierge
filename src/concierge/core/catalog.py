@@ -81,6 +81,19 @@ class Catalog:
         for e in entries:
             self.store.upsert(e)
 
+    def set_callable_for_server(self, server_id: str, value: bool) -> int:
+        """Set callable flag on all known entries for a server (resilience marking).
+        Keeps entries (does not remove). Returns count of entries updated.
+        """
+        updated = 0
+        for e in list(self.store.all()):
+            if e.server_id == server_id and getattr(e, "callable", True) != value:
+                # Re-upsert a copy with updated flag (pydantic immutable update pattern)
+                new_e = e.model_copy(update={"callable": value})
+                self.store.upsert(new_e)
+                updated += 1
+        return updated
+
     # ----- reads -----
     def get(self, canonical_name: str) -> Optional[CatalogEntry]:
         return self.store.get(canonical_name)
