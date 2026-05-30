@@ -89,6 +89,35 @@ class LegacySseAdapter(UpstreamAdapter):
                 fut.set_exception(UpstreamUnavailable("adapter closed"))
         self._pending.clear()
 
+    @staticmethod
+    async def _iter_sse_events(resp: Any) -> AsyncIterator[tuple[str, str]]:
+        """Yield ``(event, data)`` pairs from an SSE stream, buffered across chunks.
+
+        ``aiter_text()`` yields arbitrary network chunks, so a single ``data:``
+        or ``event:`` line can be split across two chunks. We accumulate the
+        buffer and only consume a line once its terminating newline has been
+        seen, reassembling a payload split mid-line instead of truncating it. A
+        blank line resets the current event type to the default ``"message"``
+        (standard SSE dispatch semantics).
+        """
+        buffer = ""
+        current_event = "message"
+        async for chunk in resp.aiter_text():
+            buffer += chunk
+            while "\n" in buffer:
+                line, buffer = buffer.split("\n", 1)
+                line = line.rstrip("\r")
+                if not line:
+                    current_event = "message"
+                elif line.startswith("event:"):
+                    current_event = line[len("event:"):].strip()
+                elif line.startswith("data:"):
+                    yield current_event, line[len("data:"):].strip()
+        # Flush a trailing data line that arrived without a terminating newline.
+        tail = buffer.rstrip("\r\n")
+        if tail.startswith("data:"):
+            yield current_event, tail[len("data:"):].strip()
+
     async def _sse_loop(self) -> None:
         assert self._client
         try:
@@ -96,22 +125,12 @@ class LegacySseAdapter(UpstreamAdapter):
                 if resp.status_code >= 400:
                     self._last_error = f"SSE connect failed: {resp.status_code}"
                     return
-                current_event = "message"
-                async for chunk in resp.aiter_text():
-                    for line in chunk.splitlines():
-                        if not line:
-                            current_event = "message"
-                            continue
-                        if line.startswith("event:"):
-                            current_event = line[len("event:"):].strip()
-                            continue
-                        if line.startswith("data:"):
-                            raw = line[len("data:"):].strip()
-                            if current_event == "endpoint":
-                                self._post_url = self._resolve_endpoint(raw)
-                                self._endpoint_ready.set()
-                            else:
-                                await self._handle_data(raw)
+                async for event, raw in self._iter_sse_events(resp):
+                    if event == "endpoint":
+                        self._post_url = self._resolve_endpoint(raw)
+                        self._endpoint_ready.set()
+                    else:
+                        await self._handle_data(raw)
         except asyncio.CancelledError:
             raise
         except Exception as e:  # noqa: BLE001
