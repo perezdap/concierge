@@ -61,7 +61,12 @@ class LegacySseAdapter(UpstreamAdapter):
         self._failures = 0
 
     async def connect(self) -> None:
-        self._client = httpx.AsyncClient(timeout=None)
+        # Bound connect/write/pool so a stuck upstream can't hang the adapter,
+        # but keep read=None: the SSE GET stream is long-lived by design and
+        # must not be cut off by a read timeout.
+        self._client = httpx.AsyncClient(
+            timeout=httpx.Timeout(connect=10.0, read=None, write=10.0, pool=10.0)
+        )
         self._stream_task = asyncio.create_task(self._sse_loop(), name=f"sse-{self.server_id}")
         if self._post_url is None:
             # Wait for the upstream to send the `endpoint` event.
