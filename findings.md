@@ -120,3 +120,11 @@ stdio, `per_session` opt-in for HTTP), not a blind per-session fan-out.
 | Config | `config.py`, `config/gateway.example.yaml` |
 | Docs | `docs/ARCHITECTURE.md`, `docs/REPO_LAYOUT.md` |
 | Tests | `tests/` (new files) |
+
+## BridgeMind P0-2 verification — 2026-05-29
+
+- `src/concierge/server/auth.py`: `StaticBearerAuth` now stores configured static tokens as SHA-256 digests, hashes the presented token, and uses `hmac.compare_digest` against every configured digest without early exit.
+- Audit/log subject safety: successful bearer auth returns `AuthResult(subject="token:<salted_sha256_prefix>")`; no `token[:6]` or other raw token bytes remain in `src/**/*.py`.
+- `tests/test_auth_providers.py`: targeted coverage includes valid token accept, missing/invalid reject, opaque stable/distinct token ids, and a monkeypatch assertion that matching the first configured token still invokes `compare_digest` for all configured digests.
+- Targeted validation: `python -m pytest tests/test_auth_providers.py -q` → 8 passed.
+- Full-suite note: `python -m pytest -x -vv` stops at unrelated `tests/test_app_factory.py::test_build_auth_variants` because the test passes `AuthConfig` directly to `_build_auth`; `_build_auth` currently expects the full gateway config.

@@ -131,3 +131,16 @@
   test_payload, test_discovery, test_metrics.
 - Pre-existing untracked file `concierge-production-plan.html` is unrelated/not
   mine — left untouched.
+
+---
+
+## Session 2 — 2026-05-29 — BridgeMind P0-2
+
+### Done
+- Claimed BridgeMind task `bc258d0f-065d-4821-bd79-55421d82771e` ([P0-2] constant-time token comparison + no token-byte leaks) for Security Engineer and moved it to `in-progress`.
+- Verified `src/concierge/server/auth.py` stores SHA-256 token digests, compares presented tokens with `hmac.compare_digest` across all configured digests without early exit, and returns a salted opaque `token:<id>` audit subject instead of raw token bytes.
+- Added a regression assertion in `tests/test_auth_providers.py` proving a valid first token still checks every configured digest.
+
+### Validation
+- `python -m pytest tests/test_auth_providers.py -q` → **8 passed**, 1 existing Starlette/httpx deprecation warning.
+- `python -m pytest -x -vv` currently fails outside this task at `tests/test_app_factory.py::test_build_auth_variants` (`AuthConfig` passed to `_build_auth`, which currently expects the full gateway config). Not addressed for P0-2.

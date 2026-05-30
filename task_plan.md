@@ -115,7 +115,20 @@ engine). See `findings.md` for the grounded codebase assessment.
   observing compact discovery, the new `gateway_list_profiles`, and the
   list_changed SSE notification.
 
+## Active Addendum — BridgeMind P0-2 (2026-05-29)
+
+### Goal
+Harden `StaticBearerAuth` so static bearer tokens are validated without timing-oracle membership tests and no raw token bytes reach audit/log subjects.
+
+### Status: in-review-ready
+- [x] Confirmed implementation in `src/concierge/server/auth.py`: tokens stored as SHA-256 digests; presented token hashed; `hmac.compare_digest` checks every configured digest without early exit; subject is salted opaque `token:<id>`.
+- [x] Regression coverage in `tests/test_auth_providers.py`: accept/reject, no raw token in subject, stable/distinct opaque ids, and no early exit across configured digests.
+- [x] Targeted validation: `python -m pytest tests/test_auth_providers.py -q` → 8 passed.
+
+### Follow-up / unrelated blocker
+- Full suite currently stops at `tests/test_app_factory.py::test_build_auth_variants` because that untracked test passes `AuthConfig` directly to `_build_auth`, while `_build_auth` currently expects the full gateway config. This is outside P0-2.
+
 ## Errors Encountered
 | Error | Attempt | Resolution |
 |-------|---------|------------|
-| _(none yet)_ | | |
+| Full pytest failure in unrelated app factory helper test | `python -m pytest -x -vv` | Logged as unrelated follow-up; targeted P0-2 auth tests pass. |
