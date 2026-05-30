@@ -20,9 +20,14 @@ from ..core.catalog import Catalog, InMemoryCatalogStore
 from ..core.notifications import NotificationBus
 from ..core.publishing import PublishingService
 from ..core.session import SessionManager
+from ..core.types import PrimitiveType
 from ..gateway.profiles import Profile, ProfileRegistry, ProfileSelector
 from ..gateway.service import GatewayService
-from ..policy.approval import DenyByDefaultApprovalBroker
+from ..policy.approval import (
+    AllowListApprovalBroker,
+    ApprovalBroker,
+    DenyByDefaultApprovalBroker,
+)
 from ..policy.engine import PolicyEngine
 from ..policy.ratelimit import TokenBucketRateLimiter
 from ..util.audit import AuditLogger
@@ -31,7 +36,7 @@ from ..util.payload import PayloadOptions
 from .admin import build_admin_router
 from .auth import AuthProvider, LocalhostAllowAuth, NoAuth, StaticBearerAuth
 from .facade import build_facade_router
-
+from .origin import OriginAllowlistMiddleware
 
 _log = get_logger("concierge.app")
 
@@ -73,12 +78,18 @@ def _build_adapter(cfg: UpstreamServerConfig):
     raise ValueError(f"{cfg.id}: unknown transport {cfg.transport}")
 
 
-def _build_auth(cfg) -> AuthProvider:
+def _build_auth(cfg: GatewayConfig) -> AuthProvider:
     if cfg.auth.type == "none":
         return NoAuth()
     if cfg.auth.type == "bearer":
         return StaticBearerAuth(cfg.auth.bearer_tokens)
     return LocalhostAllowAuth()
+
+
+def _build_approval(cfg: GatewayConfig) -> ApprovalBroker:
+    if cfg.policy.approval_mode == "allow_list":
+        return AllowListApprovalBroker(cfg.policy.approval_allow_list)
+    return DenyByDefaultApprovalBroker()
 
 
 def build_app(config: GatewayConfig) -> FastAPI:
@@ -138,7 +149,7 @@ def build_app(config: GatewayConfig) -> FastAPI:
                     tags=s.tags,
                     categories=s.categories,
                     primitive_type=None if s.primitive_type is None else
-                        __import__("concierge.core.types", fromlist=["PrimitiveType"]).PrimitiveType(s.primitive_type),
+                        PrimitiveType(s.primitive_type),
                     names=s.names,
                 )
                 for s in pcfg.selectors
@@ -152,7 +163,7 @@ def build_app(config: GatewayConfig) -> FastAPI:
     )
     policy = PolicyEngine(
         rate_limiter=rate_limiter,
-        approval=DenyByDefaultApprovalBroker(),
+        approval=_build_approval(config),
         audit=audit,
         block_dangerous_without_approval=config.policy.block_dangerous_without_approval,
     )
@@ -196,6 +207,14 @@ def build_app(config: GatewayConfig) -> FastAPI:
             await adapters.stop_all()
 
     app = FastAPI(title="Concierge", version="0.1.0", lifespan=lifespan)
+    # Enforce the Origin allow-list globally, ahead of every route handler, so no
+    # MCP route (POST/GET/DELETE) can be reached with an untrusted browser Origin
+    # — a structural guarantee independent of any per-handler check (P0-1).
+    app.add_middleware(
+        OriginAllowlistMiddleware,
+        allowed_origins=config.gateway.allowed_origins,
+        guarded_paths=[config.gateway.path],
+    )
     app.include_router(build_facade_router(
         service=service,
         sessions=sessions,
