@@ -26,3 +26,20 @@ class DenyByDefaultApprovalBroker(ApprovalBroker):
         self, session: Session, entry: CatalogEntry, arguments: dict[str, Any]
     ) -> bool:
         return False
+
+
+class AllowListApprovalBroker(ApprovalBroker):
+    """Pre-approve an explicit, operator-curated set of canonical tool names.
+
+    Interim (P0-3) broker that makes deny-by-default configurable: tools the
+    operator has vetted ahead of time can be invoked, everything else is still
+    denied. The real out-of-band approval queue is a later milestone (P1-3).
+    """
+
+    def __init__(self, allowed: list[str]) -> None:
+        self._allowed = set(allowed)
+
+    async def is_approved(
+        self, session: Session, entry: CatalogEntry, arguments: dict[str, Any]
+    ) -> bool:
+        return entry.canonical_name in self._allowed
