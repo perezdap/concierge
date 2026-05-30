@@ -90,6 +90,16 @@ python examples/session_flow.py
 
 You'll see initialize → discover → enable → call → notification → disable.
 
+The checked-in example config uses strict `${VAR}` env templating for placeholder
+remote upstream secrets. For a local-only demo, set harmless dummy values before
+starting the gateway:
+
+```powershell
+$env:NOTES_TOKEN = "demo"
+$env:JIRA_TOKEN = "demo"
+python -m concierge --config config/gateway.example.yaml
+```
+
 ## Documentation
 
 - `docs/ARCHITECTURE.md` — goals, non-goals, decisions, request/session/discovery flows, security model.
@@ -114,4 +124,16 @@ You'll see initialize → discover → enable → call → notification → disa
 
 ```bash
 pytest -q
+```
+
+Full local E2E gate:
+
+```powershell
+.\.venv\Scripts\python.exe scripts/e2e.py
+```
+
+If you have `make` available, this is equivalent:
+
+```bash
+make e2e
 ```

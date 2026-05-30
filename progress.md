@@ -166,3 +166,30 @@
 
 ### Follow-up
 - Workspace now has a clean quality-gate story. Next QA step is to verify in-review BridgeMind P0/P1 tasks against their acceptance criteria, starting with P0 blockers.
+
+---
+
+## Session 4 — 2026-05-30 — BridgeMind P0 QA verification
+
+### Done
+- Re-ran the local CI quality gate on branch `production-readiness-observability`.
+- Ran targeted P0 regression suite for facade/auth/origin/protocol, approval policy, resource safety, adapter framing, resilience, and config templating.
+- Ran transient real-server E2E with `config/gateway.example.yaml`, dummy `NOTES_TOKEN`/`JIRA_TOKEN`, and `examples/session_flow.py`.
+- Ran a focused P0-5 soak script covering 1k sessions with bounded queues, GC eviction hooks, chatty stdio stderr, and fragmented Streamable HTTP + legacy SSE parsing.
+- Added reusable E2E harness: `scripts/e2e.py`, `make e2e`, and README instructions for the direct Windows-friendly command.
+
+### Validation
+- `.venv/Scripts/python.exe -m ruff check src tests` → **PASS**
+- `.venv/Scripts/python.exe -m mypy src` → **PASS**
+- `.venv/Scripts/python.exe -m bandit -q -r src/concierge` → **PASS**
+- `.venv/Scripts/python.exe -m pip_audit` → **PASS** (`No known vulnerabilities found`)
+- `.venv/Scripts/python.exe -m pytest --cov -q` → **226 passed, 6 skipped**, coverage **83.66%**
+- Targeted P0 suite → **86 passed**, 1 existing Starlette/httpx deprecation warning.
+- Real-server `examples/session_flow.py` → **PASS**: initialize, tools/list, discover, echo call, disable, and SSE `notifications/tools/list_changed` observed.
+- P0-5 soak → **PASS**: 1000 queues capped at depth 8, 1000 sessions GC-evicted with 1000 eviction hooks, chatty stderr request returned, fragmented SSE parsers succeeded.
+- `.venv/Scripts/python.exe scripts/e2e.py` → **PASS** (targeted P0 tests, resource soak, real-server session flow).
+- `make e2e` was not runnable in this local shell because `make` is not installed; the target exists and delegates to `python scripts/e2e.py`.
+
+### Follow-up
+- BridgeMind P0 tasks should remain `in-review` for human sign-off; QA evidence now supports sign-off for P0-1 through P0-7.
+- QA-E2E standing task can move to `in-review` after BridgeMind is updated with the new reusable E2E command evidence.

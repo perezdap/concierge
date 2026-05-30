@@ -128,6 +128,22 @@ Harden `StaticBearerAuth` so static bearer tokens are validated without timing-o
 ### Follow-up / unrelated blocker
 - Full suite currently stops at `tests/test_app_factory.py::test_build_auth_variants` because that untracked test passes `AuthConfig` directly to `_build_auth`, while `_build_auth` currently expects the full gateway config. This is outside P0-2.
 
+## Active Addendum — BridgeMind P0 QA verification (2026-05-30)
+
+### Goal
+Verify all BridgeMind P0 in-review work against the production-readiness acceptance criteria, with emphasis on the previously risky facade/auth/origin/protocol/resource-safety layers.
+
+### Status: in-review-ready for human sign-off
+- [x] Local quality gate is green: ruff, mypy, bandit, pip-audit, and pytest coverage.
+- [x] Targeted P0 regression suite passed for facade/auth/origin/protocol, approval policy, adapter framing/resource-safety, resilience, and config env templating.
+- [x] Real-server session flow passed using `config/gateway.example.yaml` with dummy secret env vars.
+- [x] P0-5 focused soak passed for 1k sessions, bounded queues, GC eviction hooks, chatty stderr, and fragmented SSE parsing.
+- [x] Reusable E2E command added: `.venv/Scripts/python.exe scripts/e2e.py`; `make e2e` delegates to the same harness where make is available.
+
+### Follow-up
+- Keep P0 tasks in `in-review` for human approval; do not mark complete automatically.
+- QA-E2E standing task is ready to move to `in-review` after BridgeMind is updated with the reusable E2E command evidence.
+
 ## Errors Encountered
 | Error | Attempt | Resolution |
 |-------|---------|------------|
