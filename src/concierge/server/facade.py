@@ -39,6 +39,7 @@ from ..errors import (
 from ..gateway.service import SUPPORTED_PROTOCOL_VERSIONS, GatewayService
 from ..util.log import get_logger
 from .auth import AuthProvider
+from .lifecycle import DrainController
 
 _log = get_logger("concierge.facade")
 
@@ -126,6 +127,7 @@ def build_facade_router(
     auth: AuthProvider,
     allowed_origins: list[str],
     path: str = "/mcp",
+    drain: DrainController | None = None,
 ) -> APIRouter:
     router = APIRouter()
 
@@ -156,6 +158,21 @@ def build_facade_router(
     ) -> Response:
         if not _origin_allowed(request, allowed_origins):
             raise HTTPException(status_code=403, detail="origin not allowed")
+
+        # Graceful drain (P1-7): once the process is draining for a rolling
+        # restart, refuse to mint brand-new sessions so the client reconnects to
+        # a healthy replica. Requests carrying an existing MCP-Session-Id are
+        # still served to completion. New sessions arrive without the header.
+        if drain is not None and drain.draining and mcp_session_id is None:
+            return JSONResponse(
+                _jsonrpc_error_response(
+                    None,
+                    JSONRPC_INTERNAL_ERROR,
+                    "gateway is draining for shutdown; retry on another instance",
+                ),
+                status_code=503,
+                headers={"Retry-After": "1"},
+            )
 
         # Extract transport-level protocol version header. On an established
         # session (post-initialize) a present-but-unsupported version is a hard
@@ -200,39 +217,51 @@ def build_facade_router(
         responses: list[dict[str, Any]] = []
         new_session_id: str | None = None
 
-        for item in items:
-            try:
-                rpc = JsonRpcRequest.model_validate(item)
-            except Exception as e:  # noqa: BLE001
-                responses.append(_jsonrpc_error_response(
-                    (item or {}).get("id") if isinstance(item, dict) else None,
-                    JSONRPC_PARSE_ERROR, f"invalid JSON-RPC: {e}",
-                ))
-                continue
+        # Count this POST as in-flight for the duration of dispatch so a
+        # concurrent SIGTERM drain waits for it to finish (P1-7). Released in the
+        # finally below even on error.
+        if drain is not None:
+            await drain.acquire()
+        try:
+            for item in items:
+                try:
+                    rpc = JsonRpcRequest.model_validate(item)
+                except Exception as e:  # noqa: BLE001
+                    responses.append(_jsonrpc_error_response(
+                        (item or {}).get("id") if isinstance(item, dict) else None,
+                        JSONRPC_PARSE_ERROR, f"invalid JSON-RPC: {e}",
+                    ))
+                    continue
 
-            # Notifications (no id) — fire-and-forget. We accept and ignore the
-            # canonical notifications/initialized message here.
-            if rpc.id is None:
-                _log.debug("received notification %s", rpc.method)
-                continue
+                # Notifications (no id) — fire-and-forget. We accept and ignore the
+                # canonical notifications/initialized message here.
+                if rpc.id is None:
+                    _log.debug("received notification %s", rpc.method)
+                    continue
 
-            try:
-                session = await _resolve_session(
-                    request, mcp_session_id, rpc.method, allow_create=(mcp_session_id is None),
-                )
-                if mcp_session_id is None and rpc.method == "initialize":
-                    new_session_id = session.session_id
+                try:
+                    session = await _resolve_session(
+                        request, mcp_session_id, rpc.method,
+                        allow_create=(mcp_session_id is None),
+                    )
+                    if mcp_session_id is None and rpc.method == "initialize":
+                        new_session_id = session.session_id
 
-                result = await service.dispatch(
-                    session, rpc.method,
-                    rpc.params if isinstance(rpc.params, dict) else None,
-                )
-                responses.append(_jsonrpc_ok_response(rpc.id, result))
-            except GatewayError as e:
-                responses.append(_jsonrpc_error_response(rpc.id, e.code, e.message, e.data))
-            except Exception as e:  # noqa: BLE001
-                _log.exception("dispatch error")
-                responses.append(_jsonrpc_error_response(rpc.id, JSONRPC_INTERNAL_ERROR, str(e)))
+                    result = await service.dispatch(
+                        session, rpc.method,
+                        rpc.params if isinstance(rpc.params, dict) else None,
+                    )
+                    responses.append(_jsonrpc_ok_response(rpc.id, result))
+                except GatewayError as e:
+                    responses.append(_jsonrpc_error_response(rpc.id, e.code, e.message, e.data))
+                except Exception as e:  # noqa: BLE001
+                    _log.exception("dispatch error")
+                    responses.append(
+                        _jsonrpc_error_response(rpc.id, JSONRPC_INTERNAL_ERROR, str(e))
+                    )
+        finally:
+            if drain is not None:
+                await drain.release()
 
         # Pick response shape.
         # Per MCP Streamable HTTP + P0-4: pure notification POSTs (no id fields)

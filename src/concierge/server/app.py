@@ -6,7 +6,8 @@ Wires every subsystem together from a GatewayConfig and returns a runnable app.
 from __future__ import annotations
 
 import asyncio
-from contextlib import asynccontextmanager
+import signal
+from contextlib import asynccontextmanager, suppress
 from typing import Any
 
 from fastapi import FastAPI
@@ -54,6 +55,7 @@ from ..util.payload import PayloadOptions
 from .admin import build_admin_router
 from .auth import AuthProvider, LocalhostAllowAuth, NoAuth, StaticBearerAuth
 from .facade import build_facade_router
+from .lifecycle import DrainController
 from .origin import OriginAllowlistMiddleware
 
 _log = get_logger("concierge.app")
@@ -257,6 +259,7 @@ def build_app(config: GatewayConfig) -> FastAPI:
         output_filter=_build_output_filter(config.output),
     )
     auth = _build_auth(config)
+    drain = DrainController()
 
     async def _session_gc_loop() -> None:
         interval = config.session_pool.gc_interval_s
@@ -272,15 +275,51 @@ def build_app(config: GatewayConfig) -> FastAPI:
         except asyncio.CancelledError:
             return
 
+    def _install_sigterm_drain() -> None:
+        """Flip the drain flag the instant SIGTERM arrives (P1-7).
+
+        uvicorn also catches SIGTERM and begins its own shutdown, but it first
+        stops accepting connections and only then runs lifespan shutdown. By
+        flipping ``drain`` here as well, /readyz reports not-ready immediately —
+        before the socket closes — so a k8s preStop / endpoints update can steer
+        new traffic away while this replica finishes in-flight work. Best-effort:
+        on platforms without add_signal_handler (e.g. Windows) we simply rely on
+        the lifespan-shutdown path below.
+        """
+        try:
+            loop = asyncio.get_running_loop()
+            loop.add_signal_handler(
+                signal.SIGTERM,
+                lambda: asyncio.ensure_future(drain.begin_drain()),
+            )
+        except (NotImplementedError, RuntimeError, ValueError):  # pragma: no cover
+            pass
+
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
         _log.info("starting upstream adapters: %d configured", len(adapters.all()))
         await adapters.start_all()
+        _install_sigterm_drain()
         gc_task = asyncio.create_task(_session_gc_loop(), name="session-gc")
         try:
             yield
         finally:
+            # Graceful drain: stop admitting new sessions and let in-flight calls
+            # finish before we tear down adapters/stores (P1-7). begin_drain is
+            # idempotent — the SIGTERM handler above may have already set it.
+            await drain.begin_drain()
+            grace = config.session_pool.drain_grace_period_s
+            if drain.in_flight:
+                _log.info("draining: waiting for %d in-flight call(s)", drain.in_flight)
+            drained = await drain.wait_for_idle(grace)
+            if not drained:
+                _log.warning(
+                    "drain grace period (%.1fs) elapsed with %d call(s) still in flight",
+                    grace, drain.in_flight,
+                )
             gc_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await gc_task
             await adapters.stop_all()
             # Close persistent stores on shutdown (P1-2)
             if hasattr(catalog.store, "close"):
@@ -326,6 +365,7 @@ def build_app(config: GatewayConfig) -> FastAPI:
         auth=auth,
         allowed_origins=config.gateway.allowed_origins,
         path=config.gateway.path,
+        drain=drain,
     ))
     app.include_router(build_admin_router(
         auth=auth,
@@ -342,6 +382,7 @@ def build_app(config: GatewayConfig) -> FastAPI:
         metrics_path=config.observability.metrics_path,
         health_path=config.observability.health_path,
         ready_path=config.observability.ready_path,
+        drain=drain,
     ))
 
     # Expose for tests / programmatic access.
@@ -353,4 +394,5 @@ def build_app(config: GatewayConfig) -> FastAPI:
     app.state.bus = bus
     app.state.profiles = profile_registry
     app.state.metrics = metrics
+    app.state.drain = drain
     return app

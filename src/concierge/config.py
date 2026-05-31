@@ -109,6 +109,10 @@ class SessionPoolConfig(BaseModel):
     gc_interval_s: float = Field(default=60.0, gt=0)
     # Global cap on pooled per_session upstream sessions (LRU-evicted past this).
     max_upstream_sessions: int = Field(default=256, gt=0)
+    # P1-7: on SIGTERM, how long to wait for in-flight calls to finish before
+    # tearing down adapters/stores. Keep below the orchestrator's grace period
+    # (k8s terminationGracePeriodSeconds) so the app drains before SIGKILL.
+    drain_grace_period_s: float = Field(default=25.0, ge=0)
 
 
 class StorageConfig(BaseModel):

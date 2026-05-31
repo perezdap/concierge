@@ -230,6 +230,7 @@ def build_observability_router(
     metrics_path: str = "/metrics",
     health_path: str = "/healthz",
     ready_path: str = "/readyz",
+    drain: Any = None,
 ) -> APIRouter:
     router = APIRouter()
 
@@ -239,6 +240,14 @@ def build_observability_router(
 
     @router.get(ready_path, include_in_schema=False)
     async def readyz() -> JSONResponse:
+        # During a graceful drain (SIGTERM, P1-7) report not-ready so the load
+        # balancer / k8s endpoints controller stops sending new connections here
+        # while in-flight calls finish on the old pod.
+        if drain is not None and drain.draining:
+            return JSONResponse(
+                status_code=503,
+                content={"ok": False, "draining": True},
+            )
         upstream = adapters.health_snapshot()
         ok = all(h["connected"] for h in upstream)
         return JSONResponse(
