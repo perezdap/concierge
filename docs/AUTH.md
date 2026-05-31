@@ -208,3 +208,42 @@ providers:
 
 A revoked id is rejected immediately on the next request; with a shared backend
 the revocation is visible to every replica.
+
+---
+
+## Approval operators (P1-3)
+
+The out-of-band approval queue (`policy.approval_mode: queue`, see
+[APPROVALS.md](APPROVALS.md)) lets a human grant or deny a parked tool call. Those
+decisions are **authenticated through this same provider chain** — there is no
+anonymous decision path. The operator-decision model:
+
+1. **Authenticate.** The caller must present a credential the chain accepts
+   (`/admin/approvals*` reuses the gateway `AuthProvider`). This yields the
+   operator's `subject` and `tenant_id`.
+2. **Authorize.** If `policy.approval.operator_subjects` is non-empty, the
+   authenticated `subject` must appear in that allow-list; otherwise the caller is
+   rejected with `403 not an approval operator`. An **empty** list means any
+   authenticated principal may decide — but still only for their own tenant.
+3. **Tenant scope (always enforced).** A decision only applies to an approval
+   whose `tenant_id` equals the operator's `tenant_id`. A cross-tenant grant is
+   impossible: the store refuses it (returns `None`) and the admin endpoint maps
+   that to `404 unknown approval for this tenant`. This holds regardless of the
+   allow-list.
+
+```yaml
+policy:
+  approval_mode: queue
+  approval:
+    # Empty = any authenticated subject may decide approvals for their own tenant.
+    # Non-empty = only these audit subjects may decide (still tenant-scoped).
+    operator_subjects: ["oidc:9f3c…", "tenant-token:tt_ops…"]
+```
+
+`subject` values are the opaque, salted audit ids described above (e.g.
+`oidc:<hash>`, `tenant-token:<id>`, `token:<id>`) — list the exact subject a given
+operator authenticates as. The decision is recorded on the approval record as
+`decided_by=<subject>` and emitted to the audit log + the signed webhook.
+
+The decision surface (HTTP `/admin/approvals*` and the `concierge approval` CLI)
+is documented in [APPROVALS.md](APPROVALS.md).
