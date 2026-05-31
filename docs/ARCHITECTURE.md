@@ -46,7 +46,7 @@ Audience: infra engineers operating many MCP backends
 | Adapter interface | Single `UpstreamAdapter` ABC with normalized methods. | Lets new transports be added without touching the registry or facade. |
 | Naming | `<server_id>.<sanitized_primitive>` canonical; `display_label` is a separate, sanitized human string. | Collision-proof and prompt-injection-resistant. |
 | Error model | Internal `GatewayError` hierarchy mapped to JSON-RPC error codes at the façade boundary. Upstream errors are wrapped, not leaked. | Stable contract for downstream clients. |
-| Retry/backoff | Exponential backoff with jitter on on-demand (per-session) upstream connects (`_connect_with_backoff`); circuit breaker (failure ratio + cooldown) around `call_tool`. Automatic periodic backoff-reconnect for already-connected upstreams is **tracked in P1-5** (upstream resilience), not yet implemented. | Protects against flaky upstreams without amplifying failures. |
+| Retry/backoff | Exponential backoff with jitter on on-demand (per-session) upstream connects (`_connect_with_backoff`); circuit breaker (failure ratio + cooldown) around `call_tool`. When a periodic refresh finds an upstream down, its catalog entries are marked `callable=false` (kept, not removed) and reconnect is retried with the same backoff; recovery flips them back to `callable=true` (P1-5, upstream resilience). | Protects against flaky upstreams without amplifying failures. |
 | Timeouts | Hard per-call timeout (default 30s, override per-tool via policy). | Bounds tail latency. |
 | Servers without `list_changed` support | Periodic catalog refresh (configurable interval) + invalidate-on-error. The gateway *always* emits its own `list_changed` to downstream because publishing is gateway-controlled, not upstream-controlled. | Decouples downstream UX from upstream maturity. |
 | Sanitization | All upstream-provided strings (`name`, `title`, `description`) pass through `sanitize_metadata()` before being cataloged. JSON schemas are structurally validated, not blindly forwarded. | Mitigates prompt/tool poisoning. |
@@ -133,7 +133,7 @@ The gateway speaks **Streamable HTTP** outward. Internally:
 
 ## 10. Failure handling
 
-- Connect failure → cataloged tools stay listed; `call_tool` returns `-32010 UpstreamUnavailable`, and repeated failures trip the circuit breaker (`-32012 UpstreamCircuitOpen`). On-demand per-session reconnects use `_connect_with_backoff`. (Automatic periodic backoff-reconnect of an already-connected upstream and `callable=false` marking of affected tools are **not yet implemented — tracked in P1-5**, upstream resilience.)
+- Connect failure → cataloged tools stay listed; `call_tool` returns `-32010 UpstreamUnavailable`, and repeated failures trip the circuit breaker (`-32012 UpstreamCircuitOpen`). On-demand per-session reconnects use `_connect_with_backoff`. When a periodic refresh finds an upstream down, the manager marks that server's catalog entries `callable=false` (kept, not removed) and retries the connect with backoff; calls to a non-callable entry fail fast with `-32010 UpstreamUnavailable` rather than hanging, and a successful refresh restores `callable=true` (P1-5).
 - Tool call timeout → `-32011 UpstreamTimeout`, circuit breaker increments.
 - Circuit open → fast-fail with `-32012 UpstreamCircuitOpen`.
 - Sanitization failure during catalog refresh → entry **dropped**, logged, never surfaced.
