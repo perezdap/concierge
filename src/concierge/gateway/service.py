@@ -84,6 +84,7 @@ class GatewayService:
         profiles: ProfileRegistry,
         payload: PayloadOptions | None = None,
         output_filter: Any | None = None,  # P1-8 additive, None = disabled (conservative)
+        approval_store: Any | None = None,  # P1-3 additive, None = no pending-approval listing
     ) -> None:
         self.catalog = catalog
         self.publishing = publishing
@@ -95,6 +96,7 @@ class GatewayService:
         self.profiles = profiles
         self.payload = payload or PayloadOptions()
         self.output_filter = output_filter  # may be OutputFilter instance or None
+        self.approval_store = approval_store  # P1-3 ApprovalStore or None
         self.primitives: dict[str, GatewayPrimitive] = builtin_primitives()
 
     # ------------------------------------------------------------------

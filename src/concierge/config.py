@@ -185,6 +185,49 @@ class RateLimitConfig(BaseModel):
     tenant_quotas: dict[str, TenantQuotaConfig] = Field(default_factory=dict)
 
 
+class WebhookConfig(BaseModel):
+    """P1-3: signed approval-decision callbacks.
+
+    On every grant/deny the gateway POSTs a JSON payload signed with HMAC-SHA256
+    (``X-Concierge-Signature: sha256=…``). ``tenant_urls`` / ``tenant_secrets`` are
+    keyed by ``tenant_id``; ``default_urls`` / ``default_secret`` apply to tenants
+    without an explicit entry. A tenant with URLs but no resolvable secret is *not*
+    called (an unsigned callback is untrustworthy). Secrets should come from the
+    environment via ``${VAR}`` expansion — never commit raw secrets.
+    """
+    tenant_urls: dict[str, list[str]] = Field(default_factory=dict)
+    default_urls: list[str] = Field(default_factory=list)
+    tenant_secrets: dict[str, str] = Field(default_factory=dict)
+    default_secret: str | None = None
+    max_attempts: int = Field(default=4, ge=1)
+    backoff_base_s: float = Field(default=0.5, gt=0)
+    backoff_max_s: float = Field(default=8.0, gt=0)
+    timeout_s: float = Field(default=5.0, gt=0)
+
+
+class ApprovalConfig(BaseModel):
+    """P1-3: the real out-of-band approval queue (``approval_mode == "queue"``).
+
+    The queue lives in shared state so a parked approval survives a replica
+    restart and is visible fleet-wide; backend matrix mirrors P1-2/P1-4 (memory is
+    tests/dev only). A gated call waits up to ``wait_timeout_s`` for an operator
+    decision before the client sees a structured denial; ``ttl_s`` bounds how long
+    a record stays grantable. ``operator_subjects`` is the allow-list of auth
+    subjects (from the P1-1 chain) permitted to grant/deny — empty means "any
+    authenticated principal may decide approvals for their own tenant".
+    """
+    backend: Literal["memory", "redis", "postgres"] = "memory"
+    redis_url: str | None = None
+    postgres_url: str | None = None
+    ttl_s: float = Field(default=300.0, gt=0)
+    wait_timeout_s: float = Field(default=300.0, gt=0)
+    poll_interval_s: float = Field(default=1.0, gt=0)
+    # Auth subjects allowed to decide approvals. Empty = any authenticated subject
+    # may decide, but only for approvals belonging to their own tenant.
+    operator_subjects: list[str] = Field(default_factory=list)
+    webhooks: WebhookConfig = Field(default_factory=WebhookConfig)
+
+
 class PolicyConfig(BaseModel):
     rate_limit_capacity: float = 30.0
     rate_limit_refill_per_sec: float = 0.5
@@ -192,10 +235,13 @@ class PolicyConfig(BaseModel):
     # Approval gating for requires_approval / dangerous tools.
     #   "deny"       — deny-by-default; every gated tool is uninvokable (safe MVP default).
     #   "allow_list" — pre-approve canonical tool names in approval_allow_list; deny others.
-    # The full out-of-band approval workflow (queue + operator console) is P1-3.
-    approval_mode: Literal["deny", "allow_list"] = "deny"
+    #   "queue"      — P1-3 out-of-band workflow: park the call, wait for an operator
+    #                  grant/deny (see ``approval`` below + docs/APPROVALS.md).
+    approval_mode: Literal["deny", "allow_list", "queue"] = "deny"
     # Canonical tool names ("<server>__<tool>") pre-approved when approval_mode == "allow_list".
     approval_allow_list: list[str] = Field(default_factory=list)
+    # P1-3 queue settings (only consulted when approval_mode == "queue").
+    approval: ApprovalConfig = Field(default_factory=ApprovalConfig)
     # P1-4: distributed limiter. The legacy rate_limit_* fields above remain the
     # *default* quota; ratelimit.tenant_quotas layers per-tenant overrides on top.
     ratelimit: RateLimitConfig = Field(default_factory=RateLimitConfig)

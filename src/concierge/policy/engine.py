@@ -63,13 +63,23 @@ class PolicyEngine:
             self.block_dangerous and entry.risk_level == RiskLevel.DANGEROUS
         )
         if needs_approval:
-            ok = await self.approval.is_approved(session, entry, arguments)
-            if not ok:
+            decision = await self.approval.evaluate(session, entry, arguments)
+            if not decision.approved:
+                reason = decision.reason or "approval_required"
                 self.audit.policy_decision(
-                    session.session_id, entry.canonical_name, "deny", "approval_required"
+                    session.session_id, entry.canonical_name, "deny", reason
                 )
+                # Surface the parked approval id + outcome so a client can map the
+                # denial back to the request it queued (and poll/retry on grant).
+                data: dict[str, Any] | None = None
+                if decision.record is not None:
+                    data = {
+                        "approval_id": decision.record.approval_id,
+                        "status": decision.record.status.value,
+                    }
                 raise ApprovalRequired(
-                    f"{entry.canonical_name} requires approval to invoke"
+                    f"{entry.canonical_name} requires approval to invoke",
+                    data=data,
                 )
 
         # 3. Auth subject required?

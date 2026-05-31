@@ -215,6 +215,26 @@ async def _h_list_profiles(
     }
 
 
+async def _h_list_pending_approvals(
+    session: Session, args: dict[str, Any], svc: GatewayService  # noqa: F821
+) -> dict[str, Any]:  # noqa: F821
+    # MCP-native discovery of what is parked awaiting an operator decision, scoped
+    # to the caller's tenant. Returns summaries only (never raw arguments).
+    store = getattr(svc, "approval_store", None)
+    if store is None:
+        return {
+            "content": [{"type": "text", "text": "Approval queue is not enabled."}],
+            "structuredContent": {"approvals": []},
+        }
+    pending = await store.list_pending(tenant_id=session.tenant_id)
+    return {
+        "content": [
+            {"type": "text", "text": f"{len(pending)} approval(s) pending for this tenant."}
+        ],
+        "structuredContent": {"approvals": [r.to_public() for r in pending]},
+    }
+
+
 async def _h_use_profile(
     session: Session, args: dict[str, Any], svc: GatewayService  # noqa: F821
 ) -> dict[str, Any]:  # noqa: F821
@@ -328,6 +348,18 @@ def builtin_primitives() -> dict[str, GatewayPrimitive]:
             ),
             input_schema={"type": "object", "properties": {}},
             handler=_h_list_profiles,
+        ),
+        GatewayPrimitive(
+            name="gateway_list_pending_approvals",
+            title="List pending approvals",
+            description=(
+                "List tool calls parked awaiting an operator's approval decision for "
+                "this tenant (P1-3). Returns id, tool, a redacted argument summary, and "
+                "when each expires. An operator grants/denies via the /admin/approvals "
+                "endpoint or the `concierge approval` CLI."
+            ),
+            input_schema={"type": "object", "properties": {}},
+            handler=_h_list_pending_approvals,
         ),
         GatewayPrimitive(
             name="gateway_use_profile",

@@ -45,8 +45,17 @@ from ..policy.approval import (
     AllowListApprovalBroker,
     ApprovalBroker,
     DenyByDefaultApprovalBroker,
+    QueuedApprovalBroker,
+)
+from ..policy.approval_store import (
+    ApprovalStore,
+    InMemoryApprovalStore,
+    PostgresApprovalStore,
+    RedisApprovalStore,
 )
 from ..policy.engine import PolicyEngine
+from ..policy.webhook import WebhookConfig as WebhookDispatchConfig
+from ..policy.webhook import WebhookDispatcher
 from ..policy.ratelimit import (
     InMemoryTokenBucketRateLimiter,
     RateLimiter,
@@ -265,9 +274,68 @@ def _build_output_filter(cfg: OutputConfig) -> OutputFilter | None:
     return OutputFilter(filters)
 
 
-def _build_approval(cfg: GatewayConfig) -> ApprovalBroker:
+def _build_approval_store(cfg: GatewayConfig) -> ApprovalStore:
+    """Select the approval-queue backend (P1-3), mirroring the P1-1/P1-2 pattern."""
+    ac = cfg.policy.approval
+    if ac.backend == "redis":
+        url = ac.redis_url or cfg.storage.redis_url
+        if not url:
+            raise ValueError(
+                "policy.approval.redis_url (or storage.redis_url) is required "
+                "when policy.approval.backend=redis"
+            )
+        return RedisApprovalStore(url)
+    if ac.backend == "postgres":
+        url = ac.postgres_url or cfg.storage.catalog_postgres_url
+        if not url:
+            raise ValueError(
+                "policy.approval.postgres_url (or storage.catalog_postgres_url) is "
+                "required when policy.approval.backend=postgres"
+            )
+        return PostgresApprovalStore(url)
+    return InMemoryApprovalStore()
+
+
+def _build_webhook_dispatcher(
+    cfg: GatewayConfig, audit: AuditLogger
+) -> WebhookDispatcher | None:
+    """Build the approval-decision webhook dispatcher, or None when unconfigured."""
+    w = cfg.policy.approval.webhooks
+    if not w.tenant_urls and not w.default_urls:
+        return None
+    return WebhookDispatcher(
+        WebhookDispatchConfig(
+            tenant_urls=dict(w.tenant_urls),
+            default_urls=list(w.default_urls),
+            tenant_secrets=dict(w.tenant_secrets),
+            default_secret=w.default_secret,
+            max_attempts=w.max_attempts,
+            backoff_base_s=w.backoff_base_s,
+            backoff_max_s=w.backoff_max_s,
+            timeout_s=w.timeout_s,
+        ),
+        audit=audit,
+    )
+
+
+def _build_approval(
+    cfg: GatewayConfig,
+    store: ApprovalStore,
+    audit: AuditLogger,
+    webhooks: WebhookDispatcher | None,
+) -> ApprovalBroker:
     if cfg.policy.approval_mode == "allow_list":
         return AllowListApprovalBroker(cfg.policy.approval_allow_list)
+    if cfg.policy.approval_mode == "queue":
+        ac = cfg.policy.approval
+        return QueuedApprovalBroker(
+            store,
+            ttl_s=ac.ttl_s,
+            wait_timeout_s=ac.wait_timeout_s,
+            poll_interval_s=ac.poll_interval_s,
+            webhooks=webhooks,
+            audit=audit,
+        )
     return DenyByDefaultApprovalBroker()
 
 
@@ -403,9 +471,12 @@ def build_app(config: GatewayConfig) -> FastAPI:
 
     # Policy
     rate_limiter = _build_rate_limiter(config)
+    approval_store = _build_approval_store(config)
+    webhooks = _build_webhook_dispatcher(config, audit)
+    approval_broker = _build_approval(config, approval_store, audit, webhooks)
     policy = PolicyEngine(
         rate_limiter=rate_limiter,
-        approval=_build_approval(config),
+        approval=approval_broker,
         audit=audit,
         block_dangerous_without_approval=config.policy.block_dangerous_without_approval,
         metrics=metrics,
@@ -422,6 +493,7 @@ def build_app(config: GatewayConfig) -> FastAPI:
         profiles=profile_registry,
         payload=PayloadOptions(**config.payload.model_dump()),
         output_filter=_build_output_filter(config.output),
+        approval_store=approval_store,
     )
     revocation = _build_revocation_store(config)
     tenant_tokens = _build_tenant_token_store(config)
@@ -508,8 +580,13 @@ def build_app(config: GatewayConfig) -> FastAPI:
                 await rate_limiter.aclose()
             except Exception as e:  # noqa: BLE001
                 _log.warning("rate limiter close failed: %s", e)
-            # Close the auth stores (revocation list + tenant tokens) (P1-1).
-            for store, label in ((revocation, "revocation"), (tenant_tokens, "tenant-token")):
+            # Close the auth stores (revocation list + tenant tokens) (P1-1) and
+            # the approval queue store (P1-3).
+            for store, label in (
+                (revocation, "revocation"),
+                (tenant_tokens, "tenant-token"),
+                (approval_store, "approval"),
+            ):
                 try:
                     await store.aclose()
                 except Exception as e:  # noqa: BLE001
@@ -553,6 +630,9 @@ def build_app(config: GatewayConfig) -> FastAPI:
         service=service,
         revocation=revocation,
         tenant_tokens=tenant_tokens,
+        approval_broker=approval_broker,
+        approval_store=approval_store,
+        operator_subjects=config.policy.approval.operator_subjects,
     ))
     app.include_router(build_observability_router(
         metrics=metrics,
@@ -577,4 +657,6 @@ def build_app(config: GatewayConfig) -> FastAPI:
     app.state.drain = drain
     app.state.revocation = revocation
     app.state.tenant_tokens = tenant_tokens
+    app.state.approval_store = approval_store
+    app.state.approval_broker = approval_broker
     return app

@@ -15,7 +15,9 @@ from ..adapters.manager import AdapterManager
 from ..core.catalog import Catalog
 from ..core.session import SessionManager
 from ..gateway.service import GatewayService
-from .auth import AuthProvider
+from ..policy.approval import QueuedApprovalBroker
+from ..policy.approval_store import ApprovalStore
+from .auth import AuthProvider, AuthResult
 from .revocation import RevocationStore
 from .tenant_tokens import TenantTokenStore
 
@@ -37,6 +39,12 @@ class RevokeRequest(BaseModel):
     ttl_s: int | None = None
 
 
+class ApprovalDecisionRequest(BaseModel):
+    approval_id: str = Field(min_length=1)
+    # Optional free-text rationale recorded on the decision + sent in the webhook.
+    reason: str | None = None
+
+
 def build_admin_router(
     *,
     auth: AuthProvider,
@@ -46,11 +54,29 @@ def build_admin_router(
     service: GatewayService,
     revocation: RevocationStore | None = None,
     tenant_tokens: TenantTokenStore | None = None,
+    approval_broker: object | None = None,
+    approval_store: ApprovalStore | None = None,
+    operator_subjects: list[str] | None = None,
 ) -> APIRouter:
     router = APIRouter(prefix="/admin", tags=["admin"])
+    operator_allow = set(operator_subjects or [])
 
     async def _auth_dep(request: Request) -> None:
         await auth.authenticate(request)
+
+    async def _operator(request: Request) -> AuthResult:
+        """Authenticate the caller as an operator permitted to decide approvals.
+
+        Model (documented in docs/AUTH.md): the caller must authenticate via the
+        P1-1 chain. When ``operator_subjects`` is configured, the authenticated
+        subject must be in that allow-list; an empty list means any authenticated
+        principal may decide — but only for approvals belonging to *their own*
+        tenant (enforced per-decision below). Cross-tenant grants are forbidden.
+        """
+        result = await auth.authenticate(request)
+        if operator_allow and (result.subject is None or result.subject not in operator_allow):
+            raise HTTPException(status_code=403, detail="not an approval operator")
+        return result
 
     @router.get("/health", dependencies=[Depends(_auth_dep)])
     async def health() -> dict:
@@ -133,5 +159,52 @@ def build_admin_router(
         if revocation is None:
             raise HTTPException(status_code=501, detail="revocation store not configured")
         return {"revoked": await revocation.all()}
+
+    # -- P1-3 approval decisions -------------------------------------------
+
+    def _require_queue() -> QueuedApprovalBroker:
+        if not isinstance(approval_broker, QueuedApprovalBroker):
+            raise HTTPException(
+                status_code=501,
+                detail="approval queue not enabled (policy.approval_mode != 'queue')",
+            )
+        return approval_broker
+
+    @router.get("/approvals")
+    async def list_approvals(operator: AuthResult = Depends(_operator)) -> dict:
+        if approval_store is None:
+            raise HTTPException(status_code=501, detail="approval store not configured")
+        # An operator only ever sees pending approvals for their own tenant.
+        pending = await approval_store.list_pending(tenant_id=operator.tenant_id)
+        return {"approvals": [r.to_public() for r in pending]}
+
+    async def _decide(
+        body: ApprovalDecisionRequest, operator: AuthResult, *, granted: bool
+    ) -> dict:
+        broker = _require_queue()
+        # Tenant-scoped: the store refuses a decision on another tenant's record
+        # (returns None), so a cross-tenant grant is impossible.
+        record = await broker.decide(
+            body.approval_id,
+            granted=granted,
+            decided_by=operator.subject or "operator",
+            tenant_id=operator.tenant_id,
+            reason=body.reason,
+        )
+        if record is None:
+            raise HTTPException(status_code=404, detail="unknown approval for this tenant")
+        return {"approval": record.to_public()}
+
+    @router.post("/approvals/grant")
+    async def grant_approval(
+        body: ApprovalDecisionRequest, operator: AuthResult = Depends(_operator)
+    ) -> dict:
+        return await _decide(body, operator, granted=True)
+
+    @router.post("/approvals/deny")
+    async def deny_approval(
+        body: ApprovalDecisionRequest, operator: AuthResult = Depends(_operator)
+    ) -> dict:
+        return await _decide(body, operator, granted=False)
 
     return router
