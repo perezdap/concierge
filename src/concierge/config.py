@@ -88,6 +88,26 @@ class ProfileConfig(BaseModel):
     auto_apply: bool = False
 
 
+class TenantQuotaConfig(BaseModel):
+    """Per-tenant token-bucket override. Omitted fields fall back to the default."""
+    capacity: float = Field(gt=0)
+    refill_per_sec: float = Field(ge=0)
+
+
+class RateLimitConfig(BaseModel):
+    """P1-4: distributed rate limiter backend selection + per-tenant quotas.
+
+    Buckets are keyed by ``(tenant, session, tool)``. ``backend="redis"`` shares
+    state across replicas via an atomic Lua token bucket; ``backend="memory"``
+    (default) keeps state in-process. When ``redis_url`` is unset it falls back
+    to ``storage.redis_url`` so a single Redis can back both P1-2 and P1-4.
+    """
+    backend: Literal["memory", "redis"] = "memory"
+    redis_url: str | None = None
+    # Per-tenant capacity/refill overrides, keyed by tenant_id.
+    tenant_quotas: dict[str, TenantQuotaConfig] = Field(default_factory=dict)
+
+
 class PolicyConfig(BaseModel):
     rate_limit_capacity: float = 30.0
     rate_limit_refill_per_sec: float = 0.5
@@ -99,6 +119,9 @@ class PolicyConfig(BaseModel):
     approval_mode: Literal["deny", "allow_list"] = "deny"
     # Canonical tool names ("<server>__<tool>") pre-approved when approval_mode == "allow_list".
     approval_allow_list: list[str] = Field(default_factory=list)
+    # P1-4: distributed limiter. The legacy rate_limit_* fields above remain the
+    # *default* quota; ratelimit.tenant_quotas layers per-tenant overrides on top.
+    ratelimit: RateLimitConfig = Field(default_factory=RateLimitConfig)
 
 
 class SessionPoolConfig(BaseModel):

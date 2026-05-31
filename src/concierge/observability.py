@@ -158,6 +158,22 @@ class MetricRegistry:
                 lines.append(f"{_sample_name(name, 'sum')}{_labels(label_dict)} {hist.total:g}")
 
         lines.extend([
+            "# HELP concierge_ratelimit_allowed_total Tool calls admitted by the rate limiter.",
+            "# TYPE concierge_ratelimit_allowed_total counter",
+        ])
+        for (name, label_items), value in sorted(self._counters.items()):
+            if name == "concierge_ratelimit_allowed_total":
+                lines.append(f"{name}{_labels(dict(label_items))} {value:g}")
+
+        lines.extend([
+            "# HELP concierge_ratelimit_denied_total Tool calls rejected by the rate limiter.",
+            "# TYPE concierge_ratelimit_denied_total counter",
+        ])
+        for (name, label_items), value in sorted(self._counters.items()):
+            if name == "concierge_ratelimit_denied_total":
+                lines.append(f"{name}{_labels(dict(label_items))} {value:g}")
+
+        lines.extend([
             "# HELP concierge_sessions_active Active downstream MCP sessions.",
             "# TYPE concierge_sessions_active gauge",
             f"concierge_sessions_active {active_sessions}",

@@ -47,7 +47,12 @@ from ..policy.approval import (
     DenyByDefaultApprovalBroker,
 )
 from ..policy.engine import PolicyEngine
-from ..policy.ratelimit import TokenBucketRateLimiter
+from ..policy.ratelimit import (
+    InMemoryTokenBucketRateLimiter,
+    RateLimiter,
+    RedisTokenBucketRateLimiter,
+    TenantQuota,
+)
 from ..util.audit import AuditLogger
 from ..util.log import configure_logging, get_logger
 from ..util.output_filter import ContentTypeFilter, LengthCapper, OutputFilter, SecretRedactor
@@ -162,6 +167,40 @@ def _build_session_manager(cfg: GatewayConfig) -> SessionManager:
     return SessionManager(idle_ttl_seconds=spool.idle_ttl_s)
 
 
+def _build_rate_limiter(cfg: GatewayConfig) -> RateLimiter:
+    """Select the rate-limiter backend (P1-4), same pattern as catalog/session.
+
+    Default quota comes from the legacy ``policy.rate_limit_*`` fields; per-tenant
+    overrides layer on top via ``policy.ratelimit.tenant_quotas``. Redis is used
+    only when explicitly selected *and* a URL is resolvable (its own or the
+    shared ``storage.redis_url`` from P1-2); otherwise we fall back to in-memory.
+    """
+    policy = cfg.policy
+    rl = policy.ratelimit
+    overrides = {
+        tenant: TenantQuota(q.capacity, q.refill_per_sec)
+        for tenant, q in rl.tenant_quotas.items()
+    }
+    if rl.backend == "redis":
+        redis_url = rl.redis_url or cfg.storage.redis_url
+        if not redis_url:
+            raise ValueError(
+                "policy.ratelimit.redis_url (or storage.redis_url) is required "
+                "when policy.ratelimit.backend=redis"
+            )
+        return RedisTokenBucketRateLimiter(
+            redis_url,
+            default_capacity=policy.rate_limit_capacity,
+            default_refill=policy.rate_limit_refill_per_sec,
+            tenant_overrides=overrides,
+        )
+    return InMemoryTokenBucketRateLimiter(
+        default_capacity=policy.rate_limit_capacity,
+        default_refill=policy.rate_limit_refill_per_sec,
+        tenant_overrides=overrides,
+    )
+
+
 def build_app(config: GatewayConfig) -> FastAPI:
     configure_logging(config.log_level)
 
@@ -235,15 +274,13 @@ def build_app(config: GatewayConfig) -> FastAPI:
         ))
 
     # Policy
-    rate_limiter = TokenBucketRateLimiter(
-        default_capacity=config.policy.rate_limit_capacity,
-        default_refill=config.policy.rate_limit_refill_per_sec,
-    )
+    rate_limiter = _build_rate_limiter(config)
     policy = PolicyEngine(
         rate_limiter=rate_limiter,
         approval=_build_approval(config),
         audit=audit,
         block_dangerous_without_approval=config.policy.block_dangerous_without_approval,
+        metrics=metrics,
     )
 
     service = GatewayService(
@@ -336,6 +373,11 @@ def build_app(config: GatewayConfig) -> FastAPI:
                     await sessions.close_redis()  # type: ignore[attr-defined]
                 except Exception as e:  # noqa: BLE001
                     _log.warning("redis session store close failed: %s", e)
+            # Close the rate-limiter backend (Redis pool, if any) (P1-4).
+            try:
+                await rate_limiter.aclose()
+            except Exception as e:  # noqa: BLE001
+                _log.warning("rate limiter close failed: %s", e)
             for sink in audit_sinks:
                 close_fn = getattr(sink, "close", None)
                 if close_fn is not None:
