@@ -35,3 +35,50 @@ jobs:
 
       - name: Pytest with coverage gate
         run: pytest --cov=concierge --cov-report=term-missing --cov-fail-under=80 -q
+
+  integration:
+    # P1-2: exercise the persistent-store paths (Redis sessions + Postgres
+    # catalog) against real service containers so they cannot regress silently.
+    runs-on: ubuntu-latest
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: concierge
+          POSTGRES_DB: concierge
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      CONCIERGE_TEST_PG_DSN: postgresql://postgres:concierge@localhost:5432/concierge
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install package with persistence extras
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[test,dev,persistence,observability]"
+
+      - name: Integration tests (Redis + Postgres backed)
+        run: |
+          pytest -q \
+            tests/test_redis_session_manager.py \
+            tests/test_postgres_catalog_store.py \
+            tests/test_app_factory_storage.py
