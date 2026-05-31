@@ -58,10 +58,32 @@ from ..util.log import configure_logging, get_logger
 from ..util.output_filter import ContentTypeFilter, LengthCapper, OutputFilter, SecretRedactor
 from ..util.payload import PayloadOptions
 from .admin import build_admin_router
-from .auth import AuthProvider, LocalhostAllowAuth, NoAuth, StaticBearerAuth
+from .auth import (
+    AuthProvider,
+    LocalhostAllowAuth,
+    MtlsForwardedAuth,
+    NoAuth,
+    OidcAuth,
+    ProviderChain,
+    RevocationEnforcingAuth,
+    StaticBearerAuth,
+    TenantBearerAuth,
+)
 from .facade import build_facade_router
 from .lifecycle import DrainController
 from .origin import OriginAllowlistMiddleware
+from .revocation import (
+    InMemoryRevocationStore,
+    PostgresRevocationStore,
+    RedisRevocationStore,
+    RevocationStore,
+)
+from .tenant_tokens import (
+    InMemoryTenantTokenStore,
+    PostgresTenantTokenStore,
+    RedisTenantTokenStore,
+    TenantTokenStore,
+)
 
 _log = get_logger("concierge.app")
 
@@ -103,12 +125,118 @@ def _build_adapter(cfg: UpstreamServerConfig) -> UpstreamAdapter:
     raise ValueError(f"{cfg.id}: unknown transport {cfg.transport}")
 
 
-def _build_auth(cfg: GatewayConfig) -> AuthProvider:
+def _build_revocation_store(cfg: GatewayConfig) -> RevocationStore:
+    """Select the revocation backend (P1-1), mirroring the P1-2/P1-4 pattern."""
+    rc = cfg.auth.revocation
+    if rc.backend == "redis":
+        url = rc.redis_url or cfg.storage.redis_url
+        if not url:
+            raise ValueError(
+                "auth.revocation.redis_url (or storage.redis_url) is required "
+                "when auth.revocation.backend=redis"
+            )
+        return RedisRevocationStore(url)
+    if rc.backend == "postgres":
+        url = rc.postgres_url or cfg.storage.catalog_postgres_url
+        if not url:
+            raise ValueError(
+                "auth.revocation.postgres_url (or storage.catalog_postgres_url) is "
+                "required when auth.revocation.backend=postgres"
+            )
+        return PostgresRevocationStore(url)
+    return InMemoryRevocationStore()
+
+
+def _build_tenant_token_store(cfg: GatewayConfig) -> TenantTokenStore:
+    """Select the tenant-token backend (P1-1)."""
+    tt = cfg.auth.tenant_token
+    if tt.backend == "redis":
+        url = tt.redis_url or cfg.storage.redis_url
+        if not url:
+            raise ValueError(
+                "auth.tenant_token.redis_url (or storage.redis_url) is required "
+                "when auth.tenant_token.backend=redis"
+            )
+        return RedisTenantTokenStore(url)
+    if tt.backend == "postgres":
+        url = tt.postgres_url or cfg.storage.catalog_postgres_url
+        if not url:
+            raise ValueError(
+                "auth.tenant_token.postgres_url (or storage.catalog_postgres_url) is "
+                "required when auth.tenant_token.backend=postgres"
+            )
+        return PostgresTenantTokenStore(url)
+    return InMemoryTenantTokenStore()
+
+
+def _build_single_provider(
+    name: str,
+    cfg: GatewayConfig,
+    tenant_tokens: TenantTokenStore,
+) -> AuthProvider:
+    """Construct one named provider for the chain."""
+    if name == "bearer":
+        return StaticBearerAuth(cfg.auth.bearer_tokens)
+    if name == "tenant_token":
+        return TenantBearerAuth(tenant_tokens)
+    if name == "localhost":
+        return LocalhostAllowAuth()
+    if name == "oidc":
+        if cfg.auth.oidc is None:
+            raise ValueError("auth.providers includes 'oidc' but auth.oidc is unset")
+        o = cfg.auth.oidc
+        return OidcAuth(
+            issuer=o.issuer,
+            allowed_issuers=o.allowed_issuers or None,
+            audiences=o.audiences,
+            discovery_url=o.discovery_url,
+            jwks_uri=o.jwks_uri,
+            jwks_ttl_s=o.jwks_ttl_s,
+            leeway_s=o.leeway_s,
+            tenant_claim=o.tenant_claim,
+            default_tenant=o.default_tenant,
+            http_timeout_s=o.http_timeout_s,
+        )
+    if name == "mtls":
+        if cfg.auth.mtls is None:
+            raise ValueError("auth.providers includes 'mtls' but auth.mtls is unset")
+        m = cfg.auth.mtls
+        return MtlsForwardedAuth(
+            trusted_proxy_cidrs=m.trusted_proxy_cidrs,
+            subject_header=m.subject_header,
+            verify_header=m.verify_header,
+            subject_tenant_map=m.subject_tenant_map,
+            default_tenant=m.default_tenant,
+        )
+    raise ValueError(f"unknown auth provider: {name!r}")
+
+
+def _build_auth(
+    cfg: GatewayConfig,
+    revocation: RevocationStore,
+    tenant_tokens: TenantTokenStore,
+) -> AuthProvider:
+    """Build the auth provider (chain or legacy single) with revocation enforced.
+
+    Backwards compatible: when ``auth.providers`` is empty the legacy ``auth.type``
+    drives a single provider exactly as before. ``none`` carries no revocable
+    credential, so it is returned bare; every other path enforces the revocation
+    list (a chain for ``providers``, a single wrapped provider for the legacy types).
+    """
+    if cfg.auth.providers:
+        chain = [
+            _build_single_provider(name, cfg, tenant_tokens)
+            for name in cfg.auth.providers
+        ]
+        return ProviderChain(chain, revocation=revocation)
+
     if cfg.auth.type == "none":
         return NoAuth()
     if cfg.auth.type == "bearer":
-        return StaticBearerAuth(cfg.auth.bearer_tokens)
-    return LocalhostAllowAuth()
+        return RevocationEnforcingAuth(
+            StaticBearerAuth(cfg.auth.bearer_tokens), revocation
+        )
+    return RevocationEnforcingAuth(LocalhostAllowAuth(), revocation)
 
 
 def _wrap_cache(adapter: UpstreamAdapter, cfg: CacheConfig) -> UpstreamAdapter:
@@ -295,7 +423,9 @@ def build_app(config: GatewayConfig) -> FastAPI:
         payload=PayloadOptions(**config.payload.model_dump()),
         output_filter=_build_output_filter(config.output),
     )
-    auth = _build_auth(config)
+    revocation = _build_revocation_store(config)
+    tenant_tokens = _build_tenant_token_store(config)
+    auth = _build_auth(config, revocation, tenant_tokens)
     drain = DrainController()
 
     async def _session_gc_loop() -> None:
@@ -378,6 +508,12 @@ def build_app(config: GatewayConfig) -> FastAPI:
                 await rate_limiter.aclose()
             except Exception as e:  # noqa: BLE001
                 _log.warning("rate limiter close failed: %s", e)
+            # Close the auth stores (revocation list + tenant tokens) (P1-1).
+            for store, label in ((revocation, "revocation"), (tenant_tokens, "tenant-token")):
+                try:
+                    await store.aclose()
+                except Exception as e:  # noqa: BLE001
+                    _log.warning("%s store close failed: %s", label, e)
             for sink in audit_sinks:
                 close_fn = getattr(sink, "close", None)
                 if close_fn is not None:
@@ -415,6 +551,8 @@ def build_app(config: GatewayConfig) -> FastAPI:
         adapters=adapters,
         sessions=sessions,
         service=service,
+        revocation=revocation,
+        tenant_tokens=tenant_tokens,
     ))
     app.include_router(build_observability_router(
         metrics=metrics,
@@ -437,4 +575,6 @@ def build_app(config: GatewayConfig) -> FastAPI:
     app.state.profiles = profile_registry
     app.state.metrics = metrics
     app.state.drain = drain
+    app.state.revocation = revocation
+    app.state.tenant_tokens = tenant_tokens
     return app

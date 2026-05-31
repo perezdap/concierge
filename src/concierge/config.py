@@ -24,9 +24,86 @@ class GatewayHttpConfig(BaseModel):
     path: str = "/mcp"
 
 
+class OidcProviderConfig(BaseModel):
+    """OIDC/OAuth2 provider (P1-1): verify id_token / JWT access token from an IdP.
+
+    The IdP's signing keys are discovered from ``{issuer}/.well-known/openid-
+    configuration`` (override with ``discovery_url`` / ``jwks_uri``) and cached
+    for ``jwks_ttl_s`` with automatic ``kid``-rotation refresh. ``audiences`` and
+    ``allowed_issuers`` are enforced exactly; ``leeway_s`` tolerates clock skew on
+    exp/nbf/iat. The tenant is read from ``tenant_claim`` (falls back to
+    ``default_tenant``).
+    """
+    issuer: str
+    audiences: list[str] = Field(min_length=1)
+    allowed_issuers: list[str] = Field(default_factory=list)
+    discovery_url: str | None = None
+    jwks_uri: str | None = None
+    jwks_ttl_s: int = Field(default=3600, gt=0)
+    leeway_s: int = Field(default=60, ge=0)
+    tenant_claim: str = "tenant"
+    default_tenant: str = "default"
+    http_timeout_s: float = Field(default=5.0, gt=0)
+
+
+class MtlsProviderConfig(BaseModel):
+    """mTLS pass-through provider (P1-1) for service-to-service calls.
+
+    TLS / client-cert validation happens at the reverse proxy or ingress (see
+    ``docs/DEPLOYMENT.md``); the gateway reads the forwarded, already-validated
+    cert identity from ``subject_header``. Those headers are honored ONLY when the
+    request's immediate peer IP falls inside one of ``trusted_proxy_cidrs`` —
+    otherwise the request is rejected, so a direct client cannot forge the header.
+    An empty CIDR list trusts nobody (deny-by-default).
+    """
+    trusted_proxy_cidrs: list[str] = Field(default_factory=list)
+    subject_header: str = "x-forwarded-client-cert"
+    verify_header: str | None = "ssl-client-verify"
+    subject_tenant_map: dict[str, str] = Field(default_factory=dict)
+    default_tenant: str = "default"
+
+
+class RevocationConfig(BaseModel):
+    """Shared revocation list (P1-1). Enforced on every auth check, all providers.
+
+    Keyed by token id (OIDC ``jti`` / opaque id for static + tenant tokens). The
+    backend must be shared in prod so a revocation survives a replica restart and
+    is visible fleet-wide; ``memory`` is for tests/dev only. When ``redis_url`` /
+    ``postgres_url`` are unset they fall back to ``storage.redis_url`` /
+    ``storage.catalog_postgres_url``.
+    """
+    backend: Literal["memory", "redis", "postgres"] = "memory"
+    redis_url: str | None = None
+    postgres_url: str | None = None
+
+
+class TenantTokenConfig(BaseModel):
+    """Per-tenant minted-token store (P1-1). Same backend matrix as revocation."""
+    backend: Literal["memory", "redis", "postgres"] = "memory"
+    redis_url: str | None = None
+    postgres_url: str | None = None
+
+
 class AuthConfig(BaseModel):
+    """Authentication config.
+
+    Backwards compatible: with ``providers`` empty, the legacy ``type`` selects a
+    single provider exactly as before (none | bearer | localhost). Set
+    ``providers`` to enable the P1-1 chain — multiple providers tried in order,
+    first matching credential shape wins, deny if none match. ``tenant_token``,
+    ``oidc``, and ``mtls`` are only consulted when the matching provider is listed.
+    """
     type: Literal["none", "bearer", "localhost"] = "localhost"
     bearer_tokens: list[str] = Field(default_factory=list)
+
+    # P1-1 provider chain. Each entry names a provider; order is significant.
+    providers: list[Literal["bearer", "tenant_token", "oidc", "mtls", "localhost"]] = (
+        Field(default_factory=list)
+    )
+    oidc: OidcProviderConfig | None = None
+    mtls: MtlsProviderConfig | None = None
+    revocation: RevocationConfig = Field(default_factory=RevocationConfig)
+    tenant_token: TenantTokenConfig = Field(default_factory=TenantTokenConfig)
 
 
 class UpstreamServerConfig(BaseModel):
