@@ -267,11 +267,109 @@ The zero-drop drain behavior is covered by `tests/test_graceful_drain.py`, which
 drives a slow in-flight call across the SIGTERM boundary and asserts it completes
 while the new-session path returns 503.
 
+## Distributed rate limiting (P1-4)
+
+The policy engine rate-limits every tool call with a token bucket keyed by
+`(tenant, session, tool)`. Two backends share one interface
+(`src/concierge/policy/ratelimit.py`):
+
+| Backend  | State            | Scope                          | When to use                         |
+| -------- | ---------------- | ------------------------------ | ----------------------------------- |
+| `memory` | in-process dict  | per-replica (each enforces own)| single replica / dev (**default**)  |
+| `redis`  | Redis hash + TTL | **global** across all replicas | multi-replica / stateless app tier  |
+
+In-memory is the default and the fallback whenever no Redis URL is resolvable.
+Because each replica keeps its own buckets, a 3-replica deployment under
+in-memory effectively allows ~3× the configured limit. Use the Redis backend in
+any multi-replica deployment so the limit holds globally.
+
+### Enabling the Redis backend
+
+```yaml
+storage:
+  redis_url: ${REDIS_URL}          # P1-2 already sets this for sessions; reused here
+
+policy:
+  rate_limit_capacity: 30          # default bucket size (tokens)
+  rate_limit_refill_per_sec: 0.5   # default refill rate (tokens/sec)
+  ratelimit:
+    backend: redis                 # "memory" (default) | "redis"
+    # redis_url: redis://...       # optional; falls back to storage.redis_url
+    tenant_quotas:                 # optional per-tenant overrides
+      acme:    { capacity: 120, refill_per_sec: 2.0 }
+      free:    { capacity: 10,  refill_per_sec: 0.1 }
+```
+
+The same Redis that backs P1-2 sessions backs P1-4 limits — no second instance
+is required. Set `policy.ratelimit.backend: memory` (or omit it) to disable the
+shared limiter.
+
+### Key schema
+
+Buckets are stored under a **versioned** key so the encoding can evolve without
+colliding with old data:
+
+```
+rl:v1:{tenant}:{session}:{tool}
+```
+
+`v1` is `KEY_SCHEMA_VERSION` in `ratelimit.py`; bump it on any
+backward-incompatible change (old keys then simply expire). Each key is a Redis
+hash `{tokens, ts}` with a TTL of `ceil(capacity / refill) + 60` seconds, so
+abandoned `(tenant, session, tool)` tuples are reclaimed automatically and the
+keyspace stays bounded by *active* buckets.
+
+### Atomicity
+
+Refill-and-take runs as a single Lua script (`EVALSHA`, falling back to `EVAL`
+on `NOSCRIPT`). Doing the read-modify-write server-side makes it atomic across
+every replica targeting the same Redis, so concurrent replicas can never
+overspend a bucket — a plain `GET`/`SET` would race and double-spend. This is
+verified by `tests/test_ratelimit_redis.py` (two concurrent clients against one
+bucket assert total grants == capacity exactly).
+
+### Expected Redis ops/sec impact
+
+Each tool call costs **one** round trip (the Lua script does HMGET + HSET +
+EXPIRE atomically server-side, counted as a single client command). So
+limiter load ≈ your tool-call rate: at 1,000 tool-calls/sec the limiter adds
+~1,000 ops/sec to Redis. The script touches one key per call and stores two
+small fields, so memory is `≈ active_bucket_count × ~120 bytes`. A modest Redis
+(shared with P1-2 sessions) handles tens of thousands of ops/sec comfortably;
+the limiter client uses a bounded blocking connection pool (`max_connections=64`
+by default) so bursts queue briefly rather than exhausting connections.
+
+### Sizing per-tenant quotas
+
+- **capacity** = the maximum *burst* a tenant can fire instantly (bucket starts
+  full). Set it to the largest reasonable spike you want to absorb.
+- **refill_per_sec** = the sustained *steady-state* rate. Sustained throughput
+  converges to `refill_per_sec` calls/sec/tool once the burst budget is spent.
+- **Retry-After**: on denial the gateway returns the `GW_RATE_LIMITED`
+  (`-32003`) JSON-RPC error with `data.retry_after` set to whole seconds until
+  the bucket can grant the call (`ceil(deficit / refill_per_sec)`). A
+  never-refilling bucket (`refill_per_sec: 0`) reports a large finite backoff.
+
+Start tenants at the default quota and raise `tenant_quotas` overrides for
+high-volume customers; lower them for free/abusive tiers. Remember the bucket is
+per `(tenant, session, tool)`, so a tenant's effective ceiling scales with its
+concurrent sessions and the number of distinct tools it calls.
+
 ## Validation
 
 - Manifest structure: `tests/test_deploy_manifests.py` (YAML parse, probe paths,
   resource limits, ConfigMap mount).
 - Graceful drain: `tests/test_graceful_drain.py`.
+- Rate limiting: `tests/test_ratelimit_memory.py` (unit),
+  `tests/test_ratelimit_redis.py` (Redis integration + atomicity + load),
+  `tests/test_ratelimit_wiring.py` (error envelope, metrics, backend selection).
+  Run the Redis suite against the P1-2 test stack:
+
+  ```bash
+  docker compose -f docker-compose.test.yml up -d redis
+  pytest -q tests/test_ratelimit_redis.py
+  docker compose -f docker-compose.test.yml down
+  ```
 
 After deploying, verify:
 
