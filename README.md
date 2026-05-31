@@ -31,6 +31,31 @@ runtime via `notifications/tools/list_changed`.
 - Tests covering catalog, publishing, sanitization, and gateway primitives.
 - Working end-to-end client demo (`examples/session_flow.py`).
 
+## Quick Start (Docker) — Recommended
+
+The fastest way to try Concierge with **zero local Python setup**:
+
+```bash
+git clone https://github.com/perezdap/concierge.git
+cd concierge
+
+# Start the gateway (includes a demo echo server)
+docker compose up --build
+```
+
+In another terminal, verify it's running:
+
+```bash
+curl http://localhost:8765/healthz
+curl http://localhost:8765/readyz
+```
+
+Point any MCP client at `http://localhost:8765/mcp`.
+
+> **Tip**: Use `config/minimal.yaml` for the simplest possible setup (only the echo server, no environment variables required).
+
+## Local Development Setup
+
 ## Setup (virtual environment)
 
 Work inside a project-local virtual environment so the dependencies never touch
