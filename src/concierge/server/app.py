@@ -54,14 +54,14 @@ from ..policy.approval_store import (
     RedisApprovalStore,
 )
 from ..policy.engine import PolicyEngine
-from ..policy.webhook import WebhookConfig as WebhookDispatchConfig
-from ..policy.webhook import WebhookDispatcher
 from ..policy.ratelimit import (
     InMemoryTokenBucketRateLimiter,
     RateLimiter,
     RedisTokenBucketRateLimiter,
     TenantQuota,
 )
+from ..policy.webhook import WebhookConfig as WebhookDispatchConfig
+from ..policy.webhook import WebhookDispatcher
 from ..util.audit import AuditLogger
 from ..util.log import configure_logging, get_logger
 from ..util.output_filter import ContentTypeFilter, LengthCapper, OutputFilter, SecretRedactor
