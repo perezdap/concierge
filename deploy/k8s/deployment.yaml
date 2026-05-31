@@ -17,6 +17,9 @@ spec:
         app.kubernetes.io/name: concierge
         app.kubernetes.io/component: gateway
     spec:
+      # Allow the graceful drain to finish before SIGKILL. Must exceed the app's
+      # session_pool.drain_grace_period_s (default 25s) plus the preStop sleep.
+      terminationGracePeriodSeconds: 40
       securityContext:
         runAsNonRoot: true
         runAsUser: 10001
@@ -35,6 +38,13 @@ spec:
           env:
             - name: LOG_LEVEL
               value: INFO
+          lifecycle:
+            preStop:
+              # Give the endpoints controller time to observe the readiness flip
+              # and stop routing new traffic here before the app receives
+              # SIGTERM and begins draining in-flight calls.
+              exec:
+                command: ["sleep", "5"]
           livenessProbe:
             httpGet:
               path: /healthz

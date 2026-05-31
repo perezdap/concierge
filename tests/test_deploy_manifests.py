@@ -78,3 +78,29 @@ def test_configmap_contains_gateway_yaml() -> None:
     parsed = yaml.safe_load(gateway_yaml)
     assert parsed["gateway"]["port"] == 8765
     assert parsed["gateway"]["bind_public"] is True
+
+
+def test_deployment_drain_grace_and_prestop() -> None:
+    """P1-7: rolling-restart settings let the graceful drain finish."""
+    docs = _load_k8s_documents()
+    deployment = _doc_by_kind(docs, "Deployment")
+    pod_spec = deployment["spec"]["template"]["spec"]
+    # Termination grace must exceed the app drain window (default 25s).
+    assert pod_spec["terminationGracePeriodSeconds"] >= 30
+    container = pod_spec["containers"][0]
+    prestop = container["lifecycle"]["preStop"]
+    assert prestop["exec"]["command"][0] == "sleep"
+
+
+def test_ingress_terminates_tls_to_gateway_service() -> None:
+    """P1-7: TLS terminates at the ingress, routing to the gateway Service."""
+    path = K8S_DIR / "ingress.yaml"
+    assert path.is_file(), f"missing manifest: {path}"
+    ingress = yaml.safe_load(path.read_text(encoding="utf-8"))
+    assert ingress["kind"] == "Ingress"
+    # TLS block references a Secret by name — never inline cert material.
+    tls = ingress["spec"]["tls"][0]
+    assert tls["secretName"]
+    backend = ingress["spec"]["rules"][0]["http"]["paths"][0]["backend"]["service"]
+    assert backend["name"] == "concierge-gateway"
+    assert backend["port"]["number"] == 8765

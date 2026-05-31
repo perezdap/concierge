@@ -1,0 +1,40 @@
+# TLS-terminating ingress example (P1-7). TLS is terminated here, NOT in the
+# gateway pod — the pod speaks plain HTTP on 8765 inside the cluster network.
+#
+# The referenced Secret `concierge-tls` must be created out-of-band from a cert
+# manager (e.g. cert-manager) or your PKI — never commit certificate material:
+#
+#   kubectl create secret tls concierge-tls --cert=tls.crt --key=tls.key
+#
+# Or annotate for cert-manager to issue/renew automatically (shown below).
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: concierge-gateway
+  labels:
+    app.kubernetes.io/name: concierge
+    app.kubernetes.io/component: gateway
+  annotations:
+    # cert-manager will provision and rotate the cert into the Secret below.
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    # MCP streamable HTTP uses long-lived SSE GETs; raise proxy read timeouts.
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - concierge.example.com
+      secretName: concierge-tls
+  rules:
+    - host: concierge.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: concierge-gateway
+                port:
+                  number: 8765
