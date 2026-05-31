@@ -386,3 +386,41 @@ curl https://concierge.example.com/readyz
 - Restrict `allowed_origins` to real client origins before production exposure.
 - Scan images in CI with `pip-audit` (deps) and Trivy/Grype (image), and keep
   `deploy/sbom.json` in sync with the lockfile.
+
+### Authentication providers (P1-1)
+
+Concierge supports a config-selectable provider chain — static bearer, OIDC/OAuth2,
+mTLS pass-through, and per-tenant minted tokens — with a shared revocation list
+enforced on every request. See **`docs/AUTH.md`** for the full configuration
+reference. Deployment-relevant points:
+
+- **Shared state is mandatory in prod.** The revocation list and tenant-token
+  store must use `redis` or `postgres`, never `memory` (it does not survive a
+  replica restart and is invisible fleet-wide). They fall back to
+  `storage.redis_url` / `storage.catalog_postgres_url` when their own URLs are
+  unset:
+
+  ```yaml
+  auth:
+    providers: [oidc, tenant_token, bearer]
+    revocation:   { backend: redis }
+    tenant_token: { backend: redis }
+  ```
+
+- **mTLS pass-through trusts forwarded headers — gate the network.** When the
+  `mtls` provider is enabled, the gateway reads the client-cert identity from a
+  proxy-supplied header (`X-Forwarded-Client-Cert` / nginx `ssl-client-*`). These
+  headers are forgeable by any direct client, so the provider honors them **only**
+  when the peer IP is inside `mtls.trusted_proxy_cidrs` (empty = trust nobody).
+  You must therefore (1) ensure the gateway is reachable **only** from the
+  terminating proxy — keep it off public networks behind a NetworkPolicy / the
+  loopback `bind_public=false` default — and (2) configure the proxy to **strip**
+  any client-supplied copy of those headers before injecting its own validated
+  values.
+
+- **OIDC needs the `auth` extra** (`pyjwt[crypto]`), already present in the
+  published image and `requirements.txt`. id_token bytes are never logged.
+
+- **Revoking a token** is keyed by `token_id` (`jti` for OIDC). Use the admin path
+  (`POST /admin/revocations`) or `python -m concierge token … revoke`. With a
+  shared backend the revocation propagates to every replica on the next request.
