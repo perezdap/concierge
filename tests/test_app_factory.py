@@ -41,15 +41,24 @@ def test_build_adapter_stdio_success():
 
 
 def test_build_auth_variants():
-    assert isinstance(_build_auth(GatewayConfig(auth=AuthConfig(type="none"))), NoAuth)
-    assert isinstance(
-        _build_auth(GatewayConfig(auth=AuthConfig(type="bearer", bearer_tokens=["t"]))),
-        StaticBearerAuth,
-    )
-    assert isinstance(
-        _build_auth(GatewayConfig(auth=AuthConfig(type="localhost"))),
-        LocalhostAllowAuth,
-    )
+    # P1-1: revocation + tenant-token stores are now threaded through _build_auth.
+    # `none` stays bare (no revocable credential); bearer/localhost are wrapped in
+    # RevocationEnforcingAuth so a revoked token id is rejected on every path.
+    from concierge.server.app import _build_revocation_store, _build_tenant_token_store
+    from concierge.server.auth import RevocationEnforcingAuth
+
+    def build(cfg: GatewayConfig):
+        return _build_auth(cfg, _build_revocation_store(cfg), _build_tenant_token_store(cfg))
+
+    assert isinstance(build(GatewayConfig(auth=AuthConfig(type="none"))), NoAuth)
+
+    bearer = build(GatewayConfig(auth=AuthConfig(type="bearer", bearer_tokens=["t"])))
+    assert isinstance(bearer, RevocationEnforcingAuth)
+    assert isinstance(bearer._provider, StaticBearerAuth)
+
+    localhost = build(GatewayConfig(auth=AuthConfig(type="localhost")))
+    assert isinstance(localhost, RevocationEnforcingAuth)
+    assert isinstance(localhost._provider, LocalhostAllowAuth)
 
 
 def test_build_approval_modes():
