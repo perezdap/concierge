@@ -33,9 +33,16 @@ def test_build_app_selects_sqlite_catalog(tmp_path, base_config: GatewayConfig):
 
 def test_build_app_selects_redis_sessions(base_config: GatewayConfig):
     base_config.storage = StorageConfig(session_store="redis", redis_url="redis://localhost:6379/0")
-    # We can't fully instantiate without a running Redis, but the error should be
-    # about connectivity, not about missing config.
-    with pytest.raises(Exception) as exc_info:
+    # redis.asyncio.from_url() is lazy: build_app must wire a RedisSessionManager
+    # without opening a socket, so a running Redis is NOT required to build the app.
+    from concierge.core.session import RedisSessionManager
+
+    app = build_app(base_config)
+    assert isinstance(app.state.sessions, RedisSessionManager)
+
+
+def test_build_app_redis_sessions_requires_url(base_config: GatewayConfig):
+    # session_store=redis with no redis_url is a config error and must fail fast.
+    base_config.storage = StorageConfig(session_store="redis", redis_url=None)
+    with pytest.raises(ValueError, match="redis_url"):
         build_app(base_config)
-    # asyncpg / redis will raise on pool creation or first use; either is fine.
-    assert "redis" in str(exc_info.value).lower() or "connection" in str(exc_info.value).lower()
