@@ -4,8 +4,18 @@ from __future__ import annotations
 import pytest
 
 from concierge.config import AuthConfig, GatewayConfig, PolicyConfig, UpstreamServerConfig
-from concierge.policy.approval import AllowListApprovalBroker, DenyByDefaultApprovalBroker
-from concierge.server.app import _build_adapter, _build_approval, _build_auth
+from concierge.policy.approval import (
+    AllowListApprovalBroker,
+    DenyByDefaultApprovalBroker,
+    QueuedApprovalBroker,
+)
+from concierge.server.app import (
+    _build_adapter,
+    _build_approval,
+    _build_approval_store,
+    _build_auth,
+    _build_webhook_dispatcher,
+)
 from concierge.server.auth import LocalhostAllowAuth, NoAuth, StaticBearerAuth
 
 
@@ -62,8 +72,19 @@ def test_build_auth_variants():
 
 
 def test_build_approval_modes():
-    assert isinstance(_build_approval(GatewayConfig()), DenyByDefaultApprovalBroker)
-    cfg = GatewayConfig(
+    # P1-3: _build_approval now takes the shared store + audit + webhook dispatcher.
+    from concierge.util.audit import AuditLogger
+
+    def build(cfg: GatewayConfig):
+        store = _build_approval_store(cfg)
+        audit = AuditLogger()
+        webhooks = _build_webhook_dispatcher(cfg, audit)
+        return _build_approval(cfg, store, audit, webhooks)
+
+    assert isinstance(build(GatewayConfig()), DenyByDefaultApprovalBroker)
+    allow = GatewayConfig(
         policy=PolicyConfig(approval_mode="allow_list", approval_allow_list=["demo__alpha"]),
     )
-    assert isinstance(_build_approval(cfg), AllowListApprovalBroker)
+    assert isinstance(build(allow), AllowListApprovalBroker)
+    queue = GatewayConfig(policy=PolicyConfig(approval_mode="queue"))
+    assert isinstance(build(queue), QueuedApprovalBroker)
