@@ -19,9 +19,10 @@ runtime via `notifications/tools/list_changed`.
 - Central catalog with sanitized, namespaced primitive names (`<server>__<tool>`,
   within the function-calling tool-name charset).
 - Per-session publishing engine with `list_changed` notifications.
-- Six gateway-native primitives:
+- Gateway-native primitives:
   `gateway_discover_catalog`, `gateway_enable_tools`, `gateway_disable_tools`,
-  `gateway_list_active_tools`, `gateway_list_servers`, `gateway_use_profile`.
+  `gateway_list_active_tools`, `gateway_list_servers`, `gateway_list_profiles`,
+  `gateway_use_profile`.
 - Profiles — named bundles of selectors that publish curated capability sets.
 - Policy engine (rate limit + approval gating + risk-level enforcement).
 - Audit logger with secret redaction.
@@ -99,6 +100,49 @@ python -m concierge --config config/gateway.example.yaml
 
 Then point any Streamable HTTP MCP client at `http://127.0.0.1:8765/mcp`.
 
+## Run with Docker Compose
+
+Create or edit `config/gateway.yaml`, then start the gateway:
+
+```powershell
+docker compose up -d --build
+```
+
+The Compose file runs Concierge on `http://127.0.0.1:8765/mcp` and checks
+`/healthz` for container health.
+
+Important: the Docker image copies `config/` at build time unless you add a bind
+mount. If you edit `config/gateway.yaml` after the container has been built,
+either rebuild/recreate the container:
+
+```powershell
+docker compose up -d --build --force-recreate
+```
+
+Or add a development bind mount so config changes are picked up on recreate:
+
+```yaml
+services:
+  concierge:
+    volumes:
+      - ./config:/app/config:ro
+```
+
+Then run:
+
+```powershell
+docker compose up -d --force-recreate
+```
+
+Check what config the running container is actually using:
+
+```powershell
+docker exec concierge-concierge-1 python -c "from pathlib import Path; print(Path('/app/config/gateway.yaml').read_text())"
+```
+
+Do not commit real bearer tokens in `config/gateway.yaml`; prefer `${TOKEN_NAME}`
+placeholders and pass secrets through Compose environment variables.
+
 ## Demo (no client required)
 
 In one terminal:
@@ -130,6 +174,65 @@ python -m concierge --config config/gateway.example.yaml
 - `docs/ARCHITECTURE.md` — goals, non-goals, decisions, request/session/discovery flows, security model.
 - `docs/REPO_LAYOUT.md` — directory map.
 - `docs/ROADMAP.md` — phase 2 / phase 3 plans.
+
+## Troubleshooting upstream publishing
+
+If the gateway starts but no upstream tools appear:
+
+1. Check the container is healthy:
+
+   ```powershell
+   docker ps --filter "name=concierge" --format "table {{.Names}}\t{{.Ports}}\t{{.Status}}"
+   ```
+
+2. Check startup logs for upstream connection failures:
+
+   ```powershell
+   docker logs concierge-concierge-1 --since 10m
+   ```
+
+   Common examples:
+   - `Name or service not known` — DNS/URL problem, or the container is still
+     using an old baked-in `gateway.yaml`.
+   - `401` / `403` — upstream bearer token or header problem.
+   - `405 Method Not Allowed` on a `GET` can be harmless for Streamable HTTP MCP;
+     the protocol uses `POST /mcp` for JSON-RPC messages.
+
+3. Verify the active catalog through an MCP client:
+
+   - `gateway_list_servers` should show configured upstreams.
+   - `gateway_discover_catalog` should return upstream entries.
+   - `gateway_list_active_tools` should show published tools if a profile has
+     `auto_apply: true`.
+
+4. If a proxied tool fails with `requires an authenticated subject`, the upstream
+   entry has `requires_auth: true`. That means the downstream MCP client must be
+   authenticated to Concierge. For local development with `auth.type: none`, set
+   the upstream entry to `requires_auth: false`. This does **not** disable the
+   upstream `Authorization` header Concierge sends to the remote server.
+
+Example local Streamable HTTP upstream:
+
+```yaml
+upstream_servers:
+  - id: bridgemind
+    transport: streamable_http
+    url: https://mcp.example.com/mcp
+    headers:
+      Authorization: "Bearer ${BRIDGEMIND_TOKEN}"
+    default_risk: low
+    default_tags: ["bridgemind"]
+    default_categories: ["utility"]
+    requires_auth: false
+    isolation: per_session
+
+profiles:
+  - name: default
+    description: "Publish BridgeMind tools at session init."
+    auto_apply: true
+    selectors:
+      - server: bridgemind
+```
 
 ## Behavior the operator should remember
 

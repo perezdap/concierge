@@ -38,3 +38,4 @@ Thumbs.db
 *.local.yaml
 .env
 .env.*
+config/gateway.yaml
