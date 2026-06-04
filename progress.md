@@ -131,3 +131,65 @@
   test_payload, test_discovery, test_metrics.
 - Pre-existing untracked file `concierge-production-plan.html` is unrelated/not
   mine — left untouched.
+
+---
+
+## Session 2 — 2026-05-29 — BridgeMind P0-2
+
+### Done
+- Claimed BridgeMind task `bc258d0f-065d-4821-bd79-55421d82771e` ([P0-2] constant-time token comparison + no token-byte leaks) for Security Engineer and moved it to `in-progress`.
+- Verified `src/concierge/server/auth.py` stores SHA-256 token digests, compares presented tokens with `hmac.compare_digest` across all configured digests without early exit, and returns a salted opaque `token:<id>` audit subject instead of raw token bytes.
+- Added a regression assertion in `tests/test_auth_providers.py` proving a valid first token still checks every configured digest.
+
+### Validation
+- `python -m pytest tests/test_auth_providers.py -q` → **8 passed**, 1 existing Starlette/httpx deprecation warning.
+- `python -m pytest -x -vv` currently fails outside this task at `tests/test_app_factory.py::test_build_auth_variants` (`AuthConfig` passed to `_build_auth`, which currently expects the full gateway config). Not addressed for P0-2.
+
+---
+
+## Session 3 — 2026-05-30 — QA-E2E / quality gate triage
+
+### Done
+- Claimed BridgeMind task `53678898-b349-4881-adcb-2083797e980e` ([QA-E2E] standing release verification) for the QA Engineer and moved it to `in-progress`.
+- Ran baseline suite: `.venv/Scripts/python.exe -m pytest -q` → **215 passed**, 1 existing Starlette/httpx deprecation warning.
+- Found quality-gate failures in tracked P0/P1 edits: mypy annotation issues and Bandit low-severity findings (`except: pass`, non-crypto jitter RNG, runtime `assert`). Applied surgical cleanup in tracked files only.
+
+### Validation
+- Initial cleanup fixed tracked code issues but exposed draft P1-2 storage files in the quality gate.
+- Reconciled storage draft with the now-async `CatalogStore` interface: `SqliteCatalogStore` remains async via `asyncio.to_thread()`, `PostgresCatalogStore` implements the async ABC, and storage tests match async catalog semantics.
+- Final local quality gate is green:
+  - `.venv/Scripts/python.exe -m ruff check src tests` → **PASS**
+  - `.venv/Scripts/python.exe -m mypy src` → **PASS**
+  - `.venv/Scripts/python.exe -m bandit -q -r src/concierge` → **PASS**
+  - `.venv/Scripts/python.exe -m pip_audit` → **PASS**
+  - `.venv/Scripts/python.exe -m pytest --cov -q` → **223 passed, 6 skipped**, coverage **83.67%**
+
+### Follow-up
+- Workspace now has a clean quality-gate story. Next QA step is to verify in-review BridgeMind P0/P1 tasks against their acceptance criteria, starting with P0 blockers.
+
+---
+
+## Session 4 — 2026-05-30 — BridgeMind P0 QA verification
+
+### Done
+- Re-ran the local CI quality gate on branch `production-readiness-observability`.
+- Ran targeted P0 regression suite for facade/auth/origin/protocol, approval policy, resource safety, adapter framing, resilience, and config templating.
+- Ran transient real-server E2E with `config/gateway.example.yaml`, dummy `NOTES_TOKEN`/`JIRA_TOKEN`, and `examples/session_flow.py`.
+- Ran a focused P0-5 soak script covering 1k sessions with bounded queues, GC eviction hooks, chatty stdio stderr, and fragmented Streamable HTTP + legacy SSE parsing.
+- Added reusable E2E harness: `scripts/e2e.py`, `make e2e`, and README instructions for the direct Windows-friendly command.
+
+### Validation
+- `.venv/Scripts/python.exe -m ruff check src tests` → **PASS**
+- `.venv/Scripts/python.exe -m mypy src` → **PASS**
+- `.venv/Scripts/python.exe -m bandit -q -r src/concierge` → **PASS**
+- `.venv/Scripts/python.exe -m pip_audit` → **PASS** (`No known vulnerabilities found`)
+- `.venv/Scripts/python.exe -m pytest --cov -q` → **226 passed, 6 skipped**, coverage **83.66%**
+- Targeted P0 suite → **86 passed**, 1 existing Starlette/httpx deprecation warning.
+- Real-server `examples/session_flow.py` → **PASS**: initialize, tools/list, discover, echo call, disable, and SSE `notifications/tools/list_changed` observed.
+- P0-5 soak → **PASS**: 1000 queues capped at depth 8, 1000 sessions GC-evicted with 1000 eviction hooks, chatty stderr request returned, fragmented SSE parsers succeeded.
+- `.venv/Scripts/python.exe scripts/e2e.py` → **PASS** (targeted P0 tests, resource soak, real-server session flow).
+- `make e2e` was not runnable in this local shell because `make` is not installed; the target exists and delegates to `python scripts/e2e.py`.
+
+### Follow-up
+- BridgeMind P0 tasks should remain `in-review` for human sign-off; QA evidence now supports sign-off for P0-1 through P0-7.
+- QA-E2E standing task can move to `in-review` after BridgeMind is updated with the new reusable E2E command evidence.

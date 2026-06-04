@@ -8,7 +8,6 @@ from __future__ import annotations
 
 from typing import Any
 
-
 # Reserved JSON-RPC error codes used by MCP clients per the spec.
 JSONRPC_PARSE_ERROR = -32700
 JSONRPC_INVALID_REQUEST = -32600
@@ -59,6 +58,23 @@ class Forbidden(GatewayError):
 class RateLimited(GatewayError):
     code = GW_RATE_LIMITED
     message = "rate limited"
+
+    @classmethod
+    def with_retry_after(cls, message: str, retry_after_s: float) -> RateLimited:
+        """Build a 429-equivalent error carrying ``Retry-After`` in ``data``.
+
+        ``retry_after_s`` is rounded *up* to whole seconds (HTTP ``Retry-After``
+        is integer seconds) so a client that waits exactly that long is past the
+        refill threshold. An infinite/never-refilling bucket is reported as a
+        large finite backoff rather than a non-serializable ``inf``.
+        """
+        import math
+
+        if retry_after_s == float("inf"):
+            seconds = 86400
+        else:
+            seconds = max(1, math.ceil(retry_after_s))
+        return cls(message, data={"retry_after": seconds})
 
 
 class ApprovalRequired(GatewayError):

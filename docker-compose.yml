@@ -1,0 +1,31 @@
+services:
+  concierge:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: concierge:0.1.0
+    ports:
+      - "8765:8765"
+    command: ["--config", "config/gateway.example.yaml"]
+    environment:
+      LOG_LEVEL: INFO
+    # Container healthcheck mirrors the k8s liveness probe (GET /healthz).
+    # Readiness (GET /readyz) is consumed by k8s/load balancers; for a local
+    # smoke test, curl it manually after the stack reports healthy.
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8765/healthz')",
+        ]
+      interval: 30s
+      timeout: 3s
+      start_period: 20s
+      retries: 3
+    # Give the graceful drain (SIGTERM → finish in-flight calls) time to run on
+    # `docker compose down` / `--force-recreate` before SIGKILL. Must exceed the
+    # app's session_pool.drain_grace_period_s (default 25s).
+    stop_grace_period: 30s
+    restart: unless-stopped

@@ -9,8 +9,9 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-from datetime import datetime, timezone
-from typing import Any, AsyncIterator
+from collections.abc import AsyncIterator
+from datetime import UTC, datetime
+from typing import Any
 
 from ..core.types import AdapterHealth, TransportType
 from ..errors import UpstreamProtocolError, UpstreamTimeout, UpstreamUnavailable
@@ -41,10 +42,12 @@ class StdioAdapter(UpstreamAdapter):
 
         self._proc: asyncio.subprocess.Process | None = None
         self._reader_task: asyncio.Task[None] | None = None
+        self._stderr_task: asyncio.Task[None] | None = None
         self._pending: dict[int | str, asyncio.Future[dict[str, Any]]] = {}
         self._change_q: asyncio.Queue[str] = asyncio.Queue()
         self._connected = False
         self._last_error: str | None = None
+        self._last_stderr: str | None = None
         self._last_connected_at: datetime | None = None
         self._failures = 0
 
@@ -64,9 +67,17 @@ class StdioAdapter(UpstreamAdapter):
             self._failures += 1
             raise UpstreamUnavailable(f"could not spawn {self.command!r}: {e}") from e
 
-        self._reader_task = asyncio.create_task(self._read_loop(), name=f"stdio-read-{self.server_id}")
+        self._reader_task = asyncio.create_task(
+            self._read_loop(), name=f"stdio-read-{self.server_id}"
+        )
+        # Continuously drain stderr. An undrained stderr pipe fills its OS buffer
+        # and blocks the child mid-write — a deadlock that also stalls stdout
+        # (and thus every pending request). Draining keeps the child flowing.
+        self._stderr_task = asyncio.create_task(
+            self._drain_stderr(), name=f"stdio-stderr-{self.server_id}"
+        )
         self._connected = True
-        self._last_connected_at = datetime.now(timezone.utc)
+        self._last_connected_at = datetime.now(UTC)
         self._failures = 0
 
     async def close(self) -> None:
@@ -76,12 +87,14 @@ class StdioAdapter(UpstreamAdapter):
                 self._proc.terminate()
                 try:
                     await asyncio.wait_for(self._proc.wait(), timeout=3)
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     self._proc.kill()
             except ProcessLookupError:
                 pass
         if self._reader_task:
             self._reader_task.cancel()
+        if self._stderr_task:
+            self._stderr_task.cancel()
         for fut in self._pending.values():
             if not fut.done():
                 fut.set_exception(UpstreamUnavailable("adapter closed"))
@@ -89,10 +102,12 @@ class StdioAdapter(UpstreamAdapter):
 
     # ------------------------------------------------------------------
     async def _read_loop(self) -> None:
-        assert self._proc and self._proc.stdout
+        proc = self._proc
+        if proc is None or proc.stdout is None:
+            raise UpstreamUnavailable("stdio process not started")
         try:
             while True:
-                line = await self._proc.stdout.readline()
+                line = await proc.stdout.readline()
                 if not line:
                     break
                 try:
@@ -113,6 +128,33 @@ class StdioAdapter(UpstreamAdapter):
                 if not fut.done():
                     fut.set_exception(UpstreamUnavailable("upstream stdio exited"))
             self._pending.clear()
+
+    async def _drain_stderr(self) -> None:
+        """Drain the child's stderr so its pipe buffer never fills and blocks it.
+
+        We read fixed-size chunks rather than lines: ``readline()`` would stall on
+        output with no newline (or a single huge line), letting the stream's
+        buffer hit its high-water mark, pause the transport, and re-create the
+        very deadlock we are preventing. The most recent non-empty line is kept
+        for diagnostics. The loop exits on EOF (child closed stderr) or cancel.
+        """
+        if not self._proc or not self._proc.stderr:
+            return
+        stream = self._proc.stderr
+        try:
+            while True:
+                chunk = await stream.read(65536)
+                if not chunk:
+                    break
+                for line in chunk.decode("utf-8", "replace").splitlines():
+                    line = line.rstrip()
+                    if line:
+                        self._last_stderr = line
+                        _log.debug("stdio %s stderr: %s", self.server_id, line)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:  # noqa: BLE001 — draining must never crash the adapter
+            _log.debug("stdio %s stderr drain ended: %s", self.server_id, e)
 
     async def _dispatch(self, msg: dict[str, Any]) -> None:
         if "id" in msg and msg["id"] in self._pending:
@@ -146,7 +188,7 @@ class StdioAdapter(UpstreamAdapter):
 
         try:
             response = await asyncio.wait_for(fut, timeout=self.request_timeout_s)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             self._pending.pop(req["id"], None)
             self._failures += 1
             raise UpstreamTimeout(f"{self.server_id}.{method}")
@@ -198,7 +240,9 @@ class StdioAdapter(UpstreamAdapter):
         result = await self._request("resources/read", {"uri": uri})
         return result if isinstance(result, dict) else {}
 
-    async def get_prompt(self, name: str, arguments: dict[str, Any] | None = None) -> dict[str, Any]:
+    async def get_prompt(
+        self, name: str, arguments: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
         result = await self._request("prompts/get", {"name": name, "arguments": arguments or {}})
         return result if isinstance(result, dict) else {}
 

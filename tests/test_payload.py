@@ -19,7 +19,6 @@ from concierge.policy.ratelimit import TokenBucketRateLimiter
 from concierge.util.audit import AuditLogger
 from concierge.util.payload import PayloadOptions, cap_result_text, slim_schema
 
-
 # --------------------------------------------------------------------------- #
 # Unit: slim_schema
 # --------------------------------------------------------------------------- #

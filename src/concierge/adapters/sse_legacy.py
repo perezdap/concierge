@@ -13,8 +13,9 @@ from __future__ import annotations
 
 import asyncio
 import json
-from datetime import datetime, timezone
-from typing import Any, AsyncIterator
+from collections.abc import AsyncIterator
+from datetime import UTC, datetime
+from typing import Any
 
 import httpx
 
@@ -61,19 +62,24 @@ class LegacySseAdapter(UpstreamAdapter):
         self._failures = 0
 
     async def connect(self) -> None:
-        self._client = httpx.AsyncClient(timeout=None)
+        # Bound connect/write/pool so a stuck upstream can't hang the adapter,
+        # but keep read=None: the SSE GET stream is long-lived by design and
+        # must not be cut off by a read timeout.
+        self._client = httpx.AsyncClient(
+            timeout=httpx.Timeout(connect=10.0, read=None, write=10.0, pool=10.0)
+        )
         self._stream_task = asyncio.create_task(self._sse_loop(), name=f"sse-{self.server_id}")
         if self._post_url is None:
             # Wait for the upstream to send the `endpoint` event.
             try:
                 await asyncio.wait_for(self._endpoint_ready.wait(), timeout=10)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 await self.close()
                 raise UpstreamUnavailable("never received endpoint event")
         else:
             self._endpoint_ready.set()
         self._connected = True
-        self._last_connected_at = datetime.now(timezone.utc)
+        self._last_connected_at = datetime.now(UTC)
         self._failures = 0
 
     async def close(self) -> None:
@@ -89,29 +95,51 @@ class LegacySseAdapter(UpstreamAdapter):
                 fut.set_exception(UpstreamUnavailable("adapter closed"))
         self._pending.clear()
 
+    @staticmethod
+    async def _iter_sse_events(resp: Any) -> AsyncIterator[tuple[str, str]]:
+        """Yield ``(event, data)`` pairs from an SSE stream, buffered across chunks.
+
+        ``aiter_text()`` yields arbitrary network chunks, so a single ``data:``
+        or ``event:`` line can be split across two chunks. We accumulate the
+        buffer and only consume a line once its terminating newline has been
+        seen, reassembling a payload split mid-line instead of truncating it. A
+        blank line resets the current event type to the default ``"message"``
+        (standard SSE dispatch semantics).
+        """
+        buffer = ""
+        current_event = "message"
+        async for chunk in resp.aiter_text():
+            buffer += chunk
+            while "\n" in buffer:
+                line, buffer = buffer.split("\n", 1)
+                line = line.rstrip("\r")
+                if not line:
+                    current_event = "message"
+                elif line.startswith("event:"):
+                    current_event = line[len("event:"):].strip()
+                elif line.startswith("data:"):
+                    yield current_event, line[len("data:"):].strip()
+        # Flush a trailing data line that arrived without a terminating newline.
+        tail = buffer.rstrip("\r\n")
+        if tail.startswith("data:"):
+            yield current_event, tail[len("data:"):].strip()
+
     async def _sse_loop(self) -> None:
-        assert self._client
+        client = self._client
+        if client is None:
+            return
         try:
-            async with self._client.stream("GET", self.sse_url, headers={"Accept": "text/event-stream", **self.headers}) as resp:
+            headers = {"Accept": "text/event-stream", **self.headers}
+            async with client.stream("GET", self.sse_url, headers=headers) as resp:
                 if resp.status_code >= 400:
                     self._last_error = f"SSE connect failed: {resp.status_code}"
                     return
-                current_event = "message"
-                async for chunk in resp.aiter_text():
-                    for line in chunk.splitlines():
-                        if not line:
-                            current_event = "message"
-                            continue
-                        if line.startswith("event:"):
-                            current_event = line[len("event:"):].strip()
-                            continue
-                        if line.startswith("data:"):
-                            raw = line[len("data:"):].strip()
-                            if current_event == "endpoint":
-                                self._post_url = self._resolve_endpoint(raw)
-                                self._endpoint_ready.set()
-                            else:
-                                await self._handle_data(raw)
+                async for event, raw in self._iter_sse_events(resp):
+                    if event == "endpoint":
+                        self._post_url = self._resolve_endpoint(raw)
+                        self._endpoint_ready.set()
+                    else:
+                        await self._handle_data(raw)
         except asyncio.CancelledError:
             raise
         except Exception as e:  # noqa: BLE001
@@ -156,7 +184,10 @@ class LegacySseAdapter(UpstreamAdapter):
         fut: asyncio.Future[dict[str, Any]] = asyncio.get_running_loop().create_future()
         self._pending[req["id"]] = fut
         try:
-            resp = await self._client.post(self._post_url, json=req, headers=self.headers, timeout=self.request_timeout_s)
+            resp = await self._client.post(
+                self._post_url, json=req, headers=self.headers,
+                timeout=self.request_timeout_s,
+            )
             if resp.status_code >= 400:
                 self._pending.pop(req["id"], None)
                 self._failures += 1
@@ -173,7 +204,7 @@ class LegacySseAdapter(UpstreamAdapter):
 
         try:
             response = await asyncio.wait_for(fut, timeout=self.request_timeout_s)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             self._pending.pop(req["id"], None)
             self._failures += 1
             raise UpstreamTimeout(f"{self.server_id}.{method}")
@@ -183,7 +214,10 @@ class LegacySseAdapter(UpstreamAdapter):
         if not self._client or not self._post_url:
             return
         try:
-            await self._client.post(self._post_url, json=build_notification(method, params), headers=self.headers, timeout=self.request_timeout_s)
+            await self._client.post(
+                self._post_url, json=build_notification(method, params),
+                headers=self.headers, timeout=self.request_timeout_s,
+            )
         except httpx.HTTPError:
             pass
 
@@ -223,7 +257,9 @@ class LegacySseAdapter(UpstreamAdapter):
         result = await self._post("resources/read", {"uri": uri})
         return result if isinstance(result, dict) else {}
 
-    async def get_prompt(self, name: str, arguments: dict[str, Any] | None = None) -> dict[str, Any]:
+    async def get_prompt(
+        self, name: str, arguments: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
         result = await self._post("prompts/get", {"name": name, "arguments": arguments or {}})
         return result if isinstance(result, dict) else {}
 

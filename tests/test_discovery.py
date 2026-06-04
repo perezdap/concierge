@@ -9,7 +9,7 @@ from concierge.core.catalog import Catalog
 from concierge.core.notifications import NotificationBus
 from concierge.core.publishing import PublishingService
 from concierge.core.session import SessionManager
-from concierge.core.types import AdapterHealth, PrimitiveType, TransportType
+from concierge.core.types import AdapterHealth, TransportType
 from concierge.gateway.profiles import Profile, ProfileRegistry, ProfileSelector
 from concierge.gateway.service import GatewayService
 from concierge.policy.approval import DenyByDefaultApprovalBroker
@@ -65,9 +65,9 @@ async def _svc(*, auto_apply_readonly: bool = False) -> GatewayService:
     adapters.register(MultiToolAdapter("demo"), default_tags=["read"])
     await adapters.refresh_server("demo")
     # Manually tag beta as a "write" tool so a profile can select a subset.
-    beta = catalog.get("demo__beta")
+    beta = await catalog.get("demo__beta")
     beta.tags = ["write"]
-    catalog.upsert(beta)
+    await catalog.upsert(beta)
 
     audit = AuditLogger()
     policy = PolicyEngine(TokenBucketRateLimiter(), DenyByDefaultApprovalBroker(), audit)
@@ -153,8 +153,8 @@ async def test_rapid_enable_disable_coalesces_to_one():
     publishing = PublishingService(svc.catalog, bus)
     s = await svc.sessions.create()
 
-    publishing.enable(s, ["demo__alpha"])
-    publishing.disable(s, ["demo__alpha"])   # rapid tools mutation
+    await publishing.enable(s, ["demo__alpha"])
+    await publishing.disable(s, ["demo__alpha"])   # rapid tools mutation
     assert bus.queue_for(s.session_id).qsize() == 1
 
 
@@ -193,3 +193,38 @@ async def test_non_auto_profile_does_not_publish_at_init():
     names = [t["name"] for t in (await svc.tools_list(s))["tools"]]
     assert "demo__alpha" not in names    # nothing auto-published
     assert s.active_profiles == []
+
+
+# --------------------------------------------------------------------------- #
+# gateway_disable_tools: reconciled schema (P0-6) — `all: true` vs `names` array.
+# Regression guard: the old "*" sentinel was removed; clearing everything is
+# done via `all: true`, and `names` is an array of canonical names only.
+# --------------------------------------------------------------------------- #
+
+@pytest.mark.asyncio
+async def test_disable_tools_all_true_clears_everything():
+    svc = await _svc()
+    s = await svc.sessions.create()
+    await svc.tools_call(s, {"name": "gateway_enable_tools",
+                             "arguments": {"names": ["demo__alpha", "demo__beta"]}})
+
+    res = await svc.tools_call(s, {"name": "gateway_disable_tools",
+                                   "arguments": {"all": True}})
+    assert res["structuredContent"]["disabled_count"] == 2
+    published = [t["name"] for t in (await svc.tools_list(s))["tools"]]
+    assert "demo__alpha" not in published
+    assert "demo__beta" not in published
+
+
+@pytest.mark.asyncio
+async def test_disable_tools_by_names_array_is_selective():
+    svc = await _svc()
+    s = await svc.sessions.create()
+    await svc.tools_call(s, {"name": "gateway_enable_tools",
+                             "arguments": {"names": ["demo__alpha", "demo__beta"]}})
+
+    await svc.tools_call(s, {"name": "gateway_disable_tools",
+                             "arguments": {"names": ["demo__alpha"]}})
+    published = [t["name"] for t in (await svc.tools_list(s))["tools"]]
+    assert "demo__alpha" not in published   # only the named one removed
+    assert "demo__beta" in published        # the other stays published

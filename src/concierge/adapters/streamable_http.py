@@ -14,8 +14,9 @@ from __future__ import annotations
 
 import asyncio
 import json
-from datetime import datetime, timezone
-from typing import Any, AsyncIterator
+from collections.abc import AsyncIterator
+from datetime import UTC, datetime
+from typing import Any
 
 import httpx
 
@@ -63,7 +64,7 @@ class StreamableHttpAdapter(UpstreamAdapter):
     async def connect(self) -> None:
         self._client = httpx.AsyncClient(timeout=self.request_timeout_s)
         self._connected = True
-        self._last_connected_at = datetime.now(timezone.utc)
+        self._last_connected_at = datetime.now(UTC)
         self._failures = 0
 
     async def close(self) -> None:
@@ -116,56 +117,78 @@ class StreamableHttpAdapter(UpstreamAdapter):
         return unwrap_result(payload)
 
     @staticmethod
-    async def _read_first_sse_message(resp: httpx.Response) -> dict[str, Any]:
+    async def _iter_sse_data(resp: httpx.Response) -> AsyncIterator[str]:
+        """Yield each SSE ``data:`` payload, buffering across network chunks.
+
+        Server-sent events are newline-delimited, but a single ``data:`` line can
+        arrive split across multiple HTTP/TCP chunks. We accumulate partial lines
+        and only emit a payload once its terminating newline has been seen, so a
+        JSON message split mid-line is reassembled correctly instead of dropped.
+        """
+        buffer = ""
         async for chunk in resp.aiter_text():
-            for line in chunk.splitlines():
+            buffer += chunk
+            while "\n" in buffer:
+                line, buffer = buffer.split("\n", 1)
+                line = line.rstrip("\r")
                 if line.startswith("data:"):
-                    raw = line[len("data:"):].strip()
-                    if not raw:
-                        continue
-                    try:
-                        return json.loads(raw)
-                    except json.JSONDecodeError:
-                        continue
+                    payload = line[len("data:"):].strip()
+                    if payload:
+                        yield payload
+        # Flush a trailing data line that arrived without a terminating newline.
+        tail = buffer.rstrip("\r\n")
+        if tail.startswith("data:"):
+            payload = tail[len("data:"):].strip()
+            if payload:
+                yield payload
+
+    @staticmethod
+    async def _read_first_sse_message(resp: httpx.Response) -> dict[str, Any]:
+        async for payload in StreamableHttpAdapter._iter_sse_data(resp):
+            try:
+                return json.loads(payload)
+            except json.JSONDecodeError:
+                continue
         raise UpstreamProtocolError("empty SSE response")
 
     async def _post_notification(self, method: str, params: dict[str, Any] | None = None) -> None:
         if not self._client:
             return
         try:
-            await self._client.post(self.url, json=build_notification(method, params), headers=self._headers())
+            await self._client.post(
+                self.url, json=build_notification(method, params),
+                headers=self._headers(),
+            )
         except httpx.HTTPError:
             self._connected = False
 
     async def _start_listener(self) -> None:
         if not self.listen_for_notifications or self._listener or not self._client:
             return
-        self._listener = asyncio.create_task(self._listen_loop(), name=f"sht-listen-{self.server_id}")
+        self._listener = asyncio.create_task(
+            self._listen_loop(), name=f"sht-listen-{self.server_id}"
+        )
 
     async def _listen_loop(self) -> None:
-        assert self._client
+        client = self._client
+        if client is None:
+            return
         try:
-            async with self._client.stream("GET", self.url, headers=self._headers()) as resp:
+            async with client.stream("GET", self.url, headers=self._headers()) as resp:
                 if resp.status_code >= 400:
                     return
-                async for chunk in resp.aiter_text():
-                    for line in chunk.splitlines():
-                        if not line.startswith("data:"):
-                            continue
-                        raw = line[len("data:"):].strip()
-                        if not raw:
-                            continue
-                        try:
-                            msg = json.loads(raw)
-                        except json.JSONDecodeError:
-                            continue
-                        method = msg.get("method")
-                        if method == "notifications/tools/list_changed":
-                            self._change_q.put_nowait("tools")
-                        elif method == "notifications/resources/list_changed":
-                            self._change_q.put_nowait("resources")
-                        elif method == "notifications/prompts/list_changed":
-                            self._change_q.put_nowait("prompts")
+                async for payload in self._iter_sse_data(resp):
+                    try:
+                        msg = json.loads(payload)
+                    except json.JSONDecodeError:
+                        continue
+                    method = msg.get("method")
+                    if method == "notifications/tools/list_changed":
+                        self._change_q.put_nowait("tools")
+                    elif method == "notifications/resources/list_changed":
+                        self._change_q.put_nowait("resources")
+                    elif method == "notifications/prompts/list_changed":
+                        self._change_q.put_nowait("prompts")
         except (asyncio.CancelledError, httpx.HTTPError):
             return
         except Exception as e:  # noqa: BLE001
@@ -208,7 +231,9 @@ class StreamableHttpAdapter(UpstreamAdapter):
         result = await self._post("resources/read", {"uri": uri})
         return result if isinstance(result, dict) else {}
 
-    async def get_prompt(self, name: str, arguments: dict[str, Any] | None = None) -> dict[str, Any]:
+    async def get_prompt(
+        self, name: str, arguments: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
         result = await self._post("prompts/get", {"name": name, "arguments": arguments or {}})
         return result if isinstance(result, dict) else {}
 

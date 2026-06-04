@@ -120,3 +120,23 @@ stdio, `per_session` opt-in for HTTP), not a blind per-session fan-out.
 | Config | `config.py`, `config/gateway.example.yaml` |
 | Docs | `docs/ARCHITECTURE.md`, `docs/REPO_LAYOUT.md` |
 | Tests | `tests/` (new files) |
+
+## BridgeMind P0-2 verification — 2026-05-29
+
+- `src/concierge/server/auth.py`: `StaticBearerAuth` now stores configured static tokens as SHA-256 digests, hashes the presented token, and uses `hmac.compare_digest` against every configured digest without early exit.
+- Audit/log subject safety: successful bearer auth returns `AuthResult(subject="token:<salted_sha256_prefix>")`; no `token[:6]` or other raw token bytes remain in `src/**/*.py`.
+- `tests/test_auth_providers.py`: targeted coverage includes valid token accept, missing/invalid reject, opaque stable/distinct token ids, and a monkeypatch assertion that matching the first configured token still invokes `compare_digest` for all configured digests.
+- Targeted validation: `python -m pytest tests/test_auth_providers.py -q` → 8 passed.
+- Full-suite note: `python -m pytest -x -vv` stops at unrelated `tests/test_app_factory.py::test_build_auth_variants` because the test passes `AuthConfig` directly to `_build_auth`; `_build_auth` currently expects the full gateway config.
+
+## BridgeMind P0 QA verification — 2026-05-30
+
+Validation evidence now supports human sign-off for P0-1 through P0-7:
+
+- Quality gate: ruff, mypy, bandit, pip-audit, and pytest coverage all pass locally. Latest run: `226 passed, 6 skipped`, coverage `83.66%`.
+- Targeted P0 regression suite (`test_facade_integration`, `test_origin`, `test_server_app`, `test_policy_engine`, `test_adapters_framing`, `test_resource_safety`, `test_resilience`, `test_config`) passed: `86 passed`.
+- Real-server E2E using `config/gateway.example.yaml` passed with dummy `NOTES_TOKEN`/`JIRA_TOKEN`: initialize, tools/list, discovery, `echo__echo`, disable, and SSE `notifications/tools/list_changed` observed.
+- P0-5 focused soak passed: 1000 sessions created, per-session notification queues capped at 8 despite 20 publishes each, 1000 GC eviction hooks fired, chatty stdio stderr did not block stdout response, and both Streamable HTTP and legacy SSE parsers handled split data/event lines.
+- Reusable E2E harness added: `scripts/e2e.py` runs the targeted P0 pytest suite, the focused resource-safety soak, and the transient real-server `examples/session_flow.py`; `Makefile` exposes `make e2e` for environments with make.
+- Direct Windows-friendly validation command: `.venv/Scripts/python.exe scripts/e2e.py` → passed locally. `make` was not installed in this shell, but the target is a one-line wrapper around the same command.
+- Note: `config/gateway.example.yaml` intentionally requires `NOTES_TOKEN` and `JIRA_TOKEN` because strict `${VAR}` env templating now fails fast when secrets are missing; the E2E harness supplies harmless defaults when they are absent.

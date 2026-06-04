@@ -1,13 +1,14 @@
 """
 Streamable HTTP transport facade.
 
-Implements the downstream-facing wire protocol:
+Implements the downstream-facing wire protocol (P0-4 conformance updates applied):
 
- * `POST /mcp` — JSON-RPC request, returns either a JSON body (single response)
-   or a `text/event-stream` body containing the JSON response followed by any
-   queued notifications.
- * `GET /mcp` — opens an SSE stream that drains the session's notification
-   queue (e.g. notifications/tools/list_changed).
+ * `POST /mcp` — JSON-RPC request or notification.
+   - Requests (with id): returns 200 + JSON body (single result or array for batch).
+   - Pure notifications (no id): returns 202 Accepted with empty body per spec.
+   - Never returns an event-stream body from POST (use the GET path below for SSE).
+ * `GET /mcp` — opens a long-lived SSE stream that drains the session's
+   notification queue (e.g. notifications/tools/list_changed).
  * `DELETE /mcp` — closes the session.
 
 Sessions are identified by the `MCP-Session-Id` header. Brand-new clients
@@ -18,7 +19,9 @@ from __future__ import annotations
 
 import asyncio
 import json
-from typing import Any, AsyncIterator
+from collections.abc import AsyncIterator
+from typing import Any
+from urllib.parse import urlparse
 
 from fastapi import APIRouter, Header, HTTPException, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -27,24 +30,82 @@ from ..core.notifications import NotificationBus
 from ..core.session import SessionManager
 from ..core.types import JsonRpcRequest, Session
 from ..errors import (
-    GatewayError,
     JSONRPC_INTERNAL_ERROR,
+    JSONRPC_INVALID_REQUEST,
     JSONRPC_PARSE_ERROR,
+    GatewayError,
     Unauthorized,
 )
-from ..gateway.service import GatewayService
+from ..gateway.service import SUPPORTED_PROTOCOL_VERSIONS, GatewayService
 from ..util.log import get_logger
 from .auth import AuthProvider
+from .lifecycle import DrainController
 
 _log = get_logger("concierge.facade")
 
 
+def _unsupported_protocol_version(value: str | None) -> bool:
+    """True when an MCP-Protocol-Version header is present but not supported.
+
+    Absent header → False (permissive: older clients and many non-browser MCP
+    SDKs omit it; per spec the server assumes a compatible baseline). A present
+    but unknown version → True, so callers can reject it with a clear error.
+    """
+    return value is not None and value not in SUPPORTED_PROTOCOL_VERSIONS
+
+
+def _normalize_origin(value: str | None) -> str | None:
+    """Return a canonical 'scheme://host[:port]' string for exact matching.
+
+    Returns None for unparseable values. Ports 80/443 are omitted.
+    """
+    if not value:
+        return None
+    if value == "null":
+        return "null"
+    try:
+        p = urlparse(value)
+        if not p.scheme or not p.hostname:
+            return None
+        port = p.port
+        if port is None:
+            if p.scheme == "https":
+                port = 443
+            elif p.scheme == "http":
+                port = 80
+        if port in (80, 443):
+            return f"{p.scheme}://{p.hostname}"
+        return f"{p.scheme}://{p.hostname}:{port}"
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def _origin_allowed(request: Request, allowed: list[str]) -> bool:
+    """Exact Origin allow-list check (DNS rebinding / prefix attack safe).
+
+    Policy (explicit):
+    - Missing Origin header: allowed. Non-browser MCP clients (CLIs, LLM runtimes,
+      many SDKs) commonly omit Origin. This is the historical behavior.
+    - Origin: "null" (the literal string): only allowed if "null" is explicitly
+      present in allowed_origins. This value appears from sandboxed iframes,
+      data: URLs, and certain privacy modes — treat it as hostile by default.
+    - Any other present Origin: must match exactly after normalizing
+      scheme + host + port (using urllib.parse). No startswith / prefix matching.
+    """
     origin = request.headers.get("Origin")
+
     if origin is None:
-        # Non-browser clients usually omit Origin — only enforce when present.
         return True
-    return any(origin == a or origin.startswith(a) for a in allowed)
+
+    normalized_incoming = _normalize_origin(origin)
+    if normalized_incoming is None:
+        return False
+
+    # Normalize the allow list once per check (tiny list)
+    allowed_normalized = {
+        _normalize_origin(a) for a in allowed if a
+    }
+    return normalized_incoming in allowed_normalized
 
 
 def _jsonrpc_error_response(rid: Any, code: int, message: str, data: Any = None) -> dict[str, Any]:
@@ -66,6 +127,7 @@ def build_facade_router(
     auth: AuthProvider,
     allowed_origins: list[str],
     path: str = "/mcp",
+    drain: DrainController | None = None,
 ) -> APIRouter:
     router = APIRouter()
 
@@ -78,13 +140,15 @@ def build_facade_router(
     ) -> Session:
         # initialize is the only call where session_id may be absent.
         if session_header:
-            s = sessions.get(session_header)
+            s = await sessions.get(session_header)
             if s is None:
                 raise Unauthorized("unknown or expired session")
             return s
         if allow_create and method == "initialize":
             auth_res = await auth.authenticate(request)
-            return await sessions.create(tenant_id=auth_res.tenant_id, auth_subject=auth_res.subject)
+            return await sessions.create(
+                tenant_id=auth_res.tenant_id, auth_subject=auth_res.subject
+            )
         raise Unauthorized("missing MCP-Session-Id")
 
     @router.post(path)
@@ -94,6 +158,38 @@ def build_facade_router(
     ) -> Response:
         if not _origin_allowed(request, allowed_origins):
             raise HTTPException(status_code=403, detail="origin not allowed")
+
+        # Graceful drain (P1-7): once the process is draining for a rolling
+        # restart, refuse to mint brand-new sessions so the client reconnects to
+        # a healthy replica. Requests carrying an existing MCP-Session-Id are
+        # still served to completion. New sessions arrive without the header.
+        if drain is not None and drain.draining and mcp_session_id is None:
+            return JSONResponse(
+                _jsonrpc_error_response(
+                    None,
+                    JSONRPC_INTERNAL_ERROR,
+                    "gateway is draining for shutdown; retry on another instance",
+                ),
+                status_code=503,
+                headers={"Retry-After": "1"},
+            )
+
+        # Extract transport-level protocol version header. On an established
+        # session (post-initialize) a present-but-unsupported version is a hard
+        # error per the MCP Streamable HTTP spec. The initialize handshake itself
+        # negotiates via the body's `protocolVersion`, so we only gate follow-up
+        # requests (those carrying an MCP-Session-Id).
+        mcp_protocol_version = request.headers.get("MCP-Protocol-Version")
+        if mcp_session_id is not None and _unsupported_protocol_version(mcp_protocol_version):
+            return JSONResponse(
+                _jsonrpc_error_response(
+                    None,
+                    JSONRPC_INVALID_REQUEST,
+                    f"unsupported MCP-Protocol-Version {mcp_protocol_version!r}; "
+                    f"supported: {', '.join(SUPPORTED_PROTOCOL_VERSIONS)}",
+                ),
+                status_code=400,
+            )
 
         # Existing sessions still need auth checked on every request.
         if mcp_session_id is None:
@@ -121,43 +217,66 @@ def build_facade_router(
         responses: list[dict[str, Any]] = []
         new_session_id: str | None = None
 
-        for item in items:
-            try:
-                rpc = JsonRpcRequest.model_validate(item)
-            except Exception as e:  # noqa: BLE001
-                responses.append(_jsonrpc_error_response(
-                    (item or {}).get("id") if isinstance(item, dict) else None,
-                    JSONRPC_PARSE_ERROR, f"invalid JSON-RPC: {e}",
-                ))
-                continue
+        # Count this POST as in-flight for the duration of dispatch so a
+        # concurrent SIGTERM drain waits for it to finish (P1-7). Released in the
+        # finally below even on error.
+        if drain is not None:
+            await drain.acquire()
+        try:
+            for item in items:
+                try:
+                    rpc = JsonRpcRequest.model_validate(item)
+                except Exception as e:  # noqa: BLE001
+                    responses.append(_jsonrpc_error_response(
+                        (item or {}).get("id") if isinstance(item, dict) else None,
+                        JSONRPC_PARSE_ERROR, f"invalid JSON-RPC: {e}",
+                    ))
+                    continue
 
-            # Notifications (no id) — fire-and-forget. We accept and ignore the
-            # canonical notifications/initialized message here.
-            if rpc.id is None:
-                _log.debug("received notification %s", rpc.method)
-                continue
+                # Notifications (no id) — fire-and-forget. We accept and ignore the
+                # canonical notifications/initialized message here.
+                if rpc.id is None:
+                    _log.debug("received notification %s", rpc.method)
+                    continue
 
-            try:
-                session = await _resolve_session(
-                    request, mcp_session_id, rpc.method, allow_create=(mcp_session_id is None),
-                )
-                if mcp_session_id is None and rpc.method == "initialize":
-                    new_session_id = session.session_id
+                try:
+                    session = await _resolve_session(
+                        request, mcp_session_id, rpc.method,
+                        allow_create=(mcp_session_id is None),
+                    )
+                    if mcp_session_id is None and rpc.method == "initialize":
+                        new_session_id = session.session_id
 
-                result = await service.dispatch(session, rpc.method, rpc.params if isinstance(rpc.params, dict) else None)
-                responses.append(_jsonrpc_ok_response(rpc.id, result))
-            except GatewayError as e:
-                responses.append(_jsonrpc_error_response(rpc.id, e.code, e.message, e.data))
-            except Exception as e:  # noqa: BLE001
-                _log.exception("dispatch error")
-                responses.append(_jsonrpc_error_response(rpc.id, JSONRPC_INTERNAL_ERROR, str(e)))
+                    result = await service.dispatch(
+                        session, rpc.method,
+                        rpc.params if isinstance(rpc.params, dict) else None,
+                    )
+                    responses.append(_jsonrpc_ok_response(rpc.id, result))
+                except GatewayError as e:
+                    responses.append(_jsonrpc_error_response(rpc.id, e.code, e.message, e.data))
+                except Exception as e:  # noqa: BLE001
+                    _log.exception("dispatch error")
+                    responses.append(
+                        _jsonrpc_error_response(rpc.id, JSONRPC_INTERNAL_ERROR, str(e))
+                    )
+        finally:
+            if drain is not None:
+                await drain.release()
 
-        # Pick response shape
-        body = responses if is_batch else (responses[0] if responses else None)
+        # Pick response shape.
+        # Per MCP Streamable HTTP + P0-4: pure notification POSTs (no id fields)
+        # must return HTTP 202 Accepted with empty body. Requests (with id) return
+        # 200 + JSON (single object or array for batch).
         headers: dict[str, str] = {}
         if new_session_id:
             headers["MCP-Session-Id"] = new_session_id
 
+        if not responses:
+            # No JSON-RPC responses to return → this POST contained only notifications.
+            # Return 202 Accepted, empty body (no content).
+            return Response(status_code=202, headers=headers)
+
+        body = responses if is_batch else responses[0]
         # Streaming response is allowed by Streamable HTTP. For initialize and
         # other small RPCs we just return JSON; this keeps clients that don't
         # implement SSE happy.
@@ -170,13 +289,21 @@ def build_facade_router(
     ) -> Response:
         if not _origin_allowed(request, allowed_origins):
             raise HTTPException(status_code=403, detail="origin not allowed")
+        if _unsupported_protocol_version(request.headers.get("MCP-Protocol-Version")):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"unsupported MCP-Protocol-Version; "
+                    f"supported: {', '.join(SUPPORTED_PROTOCOL_VERSIONS)}"
+                ),
+            )
         try:
             await auth.authenticate(request)
         except Unauthorized as e:
             raise HTTPException(status_code=401, detail=e.message)
         if not mcp_session_id:
             raise HTTPException(status_code=400, detail="MCP-Session-Id required")
-        session = sessions.get(mcp_session_id)
+        session = await sessions.get(mcp_session_id)
         if session is None:
             raise HTTPException(status_code=404, detail="unknown session")
 
@@ -187,12 +314,12 @@ def build_facade_router(
                 while True:
                     try:
                         msg = await asyncio.wait_for(queue.get(), timeout=20.0)
-                    except asyncio.TimeoutError:
+                    except TimeoutError:
                         # Keepalive comment — keeps proxies from closing.
                         yield b": keepalive\n\n"
                         continue
                     payload = json.dumps(msg, ensure_ascii=False)
-                    yield f"event: message\ndata: {payload}\n\n".encode("utf-8")
+                    yield f"event: message\ndata: {payload}\n\n".encode()
             except asyncio.CancelledError:
                 return
 

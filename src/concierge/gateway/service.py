@@ -26,6 +26,7 @@ from ..errors import (
     MethodNotFound,
     UnknownPrimitive,
 )
+from ..observability import trace_span
 from ..policy.engine import PolicyEngine
 from ..util.audit import AuditLogger
 from ..util.log import get_logger
@@ -33,10 +34,33 @@ from ..util.payload import PayloadOptions, cap_result_text, slim_schema
 from .primitives import GatewayPrimitive, builtin_primitives
 from .profiles import ProfileRegistry
 
+# P1-8 additive (safe default None = pass-through)
+try:
+    from ..util.output_filter import OutputFilter
+except Exception:  # noqa: BLE001
+    OutputFilter = None  # type: ignore[misc,assignment]
+
 _log = get_logger("concierge.service")
 
 
 PROTOCOL_VERSION = "2025-06-18"
+
+# Supported MCP protocol versions for negotiation (see P0-4).
+# We currently support only the 2025-06-18 Streamable HTTP baseline.
+SUPPORTED_PROTOCOL_VERSIONS: list[str] = ["2025-06-18"]
+
+
+def negotiate_protocol_version(client_version: str | None) -> str:
+    """Negotiate the protocol version for a session.
+
+    Per MCP spec and P0-4:
+    - Echo client's version if we support it.
+    - Otherwise fall back to our best (current) version.
+    - In the future we can return an error for truly incompatible versions.
+    """
+    if client_version and client_version in SUPPORTED_PROTOCOL_VERSIONS:
+        return client_version
+    return PROTOCOL_VERSION
 
 
 def _safe_bytes(obj: Any) -> int | None:
@@ -59,6 +83,8 @@ class GatewayService:
         bus: NotificationBus,
         profiles: ProfileRegistry,
         payload: PayloadOptions | None = None,
+        output_filter: Any | None = None,  # P1-8 additive, None = disabled (conservative)
+        approval_store: Any | None = None,  # P1-3 additive, None = no pending-approval listing
     ) -> None:
         self.catalog = catalog
         self.publishing = publishing
@@ -69,22 +95,27 @@ class GatewayService:
         self.bus = bus
         self.profiles = profiles
         self.payload = payload or PayloadOptions()
+        self.output_filter = output_filter  # may be OutputFilter instance or None
+        self.approval_store = approval_store  # P1-3 ApprovalStore or None
         self.primitives: dict[str, GatewayPrimitive] = builtin_primitives()
 
     # ------------------------------------------------------------------
     # MCP method handlers
     # ------------------------------------------------------------------
     async def initialize(self, session: Session, params: dict[str, Any]) -> dict[str, Any]:
+        client_version = params.get("protocolVersion") if isinstance(params, dict) else None
+        agreed_version = negotiate_protocol_version(client_version)
+
         session.client_info = params.get("clientInfo", {}) if isinstance(params, dict) else {}
-        session.protocol_version = params.get("protocolVersion") if isinstance(params, dict) else None
+        session.protocol_version = agreed_version
         self.audit.session_created(
             session.session_id,
             client=session.client_info.get("name"),
             protocol=session.protocol_version,
         )
-        self._apply_auto_profiles(session)
+        await self._apply_auto_profiles(session)
         return {
-            "protocolVersion": PROTOCOL_VERSION,
+            "protocolVersion": agreed_version,
             "serverInfo": {"name": "concierge", "version": "0.1.0"},
             "capabilities": {
                 "tools": {"listChanged": True},
@@ -94,15 +125,15 @@ class GatewayService:
             },
         }
 
-    def _apply_auto_profiles(self, session: Session) -> None:
+    async def _apply_auto_profiles(self, session: Session) -> None:
         """Publish auto_apply profiles' tools at session init.
 
         This makes proxied tools present in the very first tools/list, so clients
         that don't react to notifications/tools/list_changed can still reach them.
         """
         for profile in self.profiles.auto_apply_profiles():
-            names = profile.resolve(self.catalog)
-            enabled, _ = self.publishing.enable(session, names, by=f"profile:{profile.name}")
+            names = await profile.resolve(self.catalog)
+            enabled, _ = await self.publishing.enable(session, names, by=f"profile:{profile.name}")
             if profile.name not in session.active_profiles:
                 session.active_profiles.append(profile.name)
             if enabled:
@@ -113,7 +144,7 @@ class GatewayService:
         tools: list[dict[str, Any]] = []
         for p in self.primitives.values():
             tools.append(p.as_tool_descriptor())
-        for entry in self.publishing.list_published(session, PrimitiveType.TOOL):
+        for entry in await self.publishing.list_published(session, PrimitiveType.TOOL):
             schema = entry.input_schema or {"type": "object"}
             if self.payload.slim_tools_list:
                 schema = slim_schema(
@@ -131,7 +162,7 @@ class GatewayService:
 
     async def resources_list(self, session: Session) -> dict[str, Any]:
         resources = []
-        for entry in self.publishing.list_published(session, PrimitiveType.RESOURCE):
+        for entry in await self.publishing.list_published(session, PrimitiveType.RESOURCE):
             resources.append({
                 "uri": entry.upstream_name,                # upstream URI preserved
                 "name": entry.canonical_name,
@@ -141,7 +172,7 @@ class GatewayService:
 
     async def prompts_list(self, session: Session) -> dict[str, Any]:
         prompts = []
-        for entry in self.publishing.list_published(session, PrimitiveType.PROMPT):
+        for entry in await self.publishing.list_published(session, PrimitiveType.PROMPT):
             prompts.append({
                 "name": entry.canonical_name,
                 "description": entry.short_description,
@@ -168,15 +199,24 @@ class GatewayService:
                 raise InvalidParams(str(e))
 
         # Upstream-routed primitive — must be published and policy-cleared.
-        entry = self.publishing.require_published(session, name, PrimitiveType.TOOL)
+        entry = await self.publishing.require_published(session, name, PrimitiveType.TOOL)
         await self.policy.authorize_call(session, entry, args)
 
         t0 = time.perf_counter()
         try:
-            result = await self.adapters.call_tool(
-                entry.server_id, entry.upstream_name, args,
-                router_session_id=session.session_id,
-            )
+            with trace_span(
+                "concierge.gateway.tools_call",
+                session_id=session.session_id,
+                tool_name=name,
+                server_id=entry.server_id,
+            ):
+                result = await self.adapters.call_tool(
+                    entry.server_id, entry.upstream_name, args,
+                    router_session_id=session.session_id,
+                )
+            # P1-8 additive output filter hook (secret redaction etc on results)
+            if self.output_filter is not None and hasattr(self.output_filter, "apply"):
+                result = self.output_filter.apply(result)
             result = cap_result_text(result, self.payload.max_result_bytes)
             latency = (time.perf_counter() - t0) * 1000
             self.audit.tool_called(
@@ -186,7 +226,9 @@ class GatewayService:
             return result
         except GatewayError as e:
             latency = (time.perf_counter() - t0) * 1000
-            self.audit.tool_called(session.session_id, name, entry.server_id, False, latency, e.code)
+            self.audit.tool_called(
+                session.session_id, name, entry.server_id, False, latency, e.code
+            )
             raise
 
     async def resources_read(self, session: Session, params: dict[str, Any]) -> dict[str, Any]:
@@ -196,16 +238,18 @@ class GatewayService:
         if not isinstance(canonical, str):
             raise InvalidParams("resources/read: name or uri required")
         # Allow lookup by either canonical name or upstream URI.
-        entry = self.catalog.get(canonical)
+        entry = await self.catalog.get(canonical)
         if entry is None:
             # Fall back: scan for matching upstream uri among published resources.
-            for e in self.publishing.list_published(session, PrimitiveType.RESOURCE):
+            for e in await self.publishing.list_published(session, PrimitiveType.RESOURCE):
                 if e.upstream_name == canonical:
                     entry = e
                     break
         if entry is None:
             raise UnknownPrimitive(canonical)
-        entry = self.publishing.require_published(session, entry.canonical_name, PrimitiveType.RESOURCE)
+        entry = await self.publishing.require_published(
+            session, entry.canonical_name, PrimitiveType.RESOURCE
+        )
         return await self.adapters.read_resource(
             entry.server_id, entry.upstream_name, router_session_id=session.session_id,
         )
@@ -216,7 +260,7 @@ class GatewayService:
         name = params.get("name")
         if not isinstance(name, str):
             raise InvalidParams("prompts/get: name required")
-        entry = self.publishing.require_published(session, name, PrimitiveType.PROMPT)
+        entry = await self.publishing.require_published(session, name, PrimitiveType.PROMPT)
         return await self.adapters.get_prompt(
             entry.server_id, entry.upstream_name, params.get("arguments") or {},
             router_session_id=session.session_id,
@@ -225,20 +269,26 @@ class GatewayService:
     # ------------------------------------------------------------------
     async def dispatch(self, session: Session, method: str, params: dict[str, Any] | None) -> Any:
         params = params if isinstance(params, dict) else {}
-        if method == "initialize":
-            return await self.initialize(session, params)
-        if method == "tools/list":
-            return await self.tools_list(session)
-        if method == "tools/call":
-            return await self.tools_call(session, params)
-        if method == "resources/list":
-            return await self.resources_list(session)
-        if method == "resources/read":
-            return await self.resources_read(session, params)
-        if method == "prompts/list":
-            return await self.prompts_list(session)
-        if method == "prompts/get":
-            return await self.prompts_get(session, params)
-        if method == "ping":
-            return {}
-        raise MethodNotFound(f"unknown method: {method}")
+        with trace_span(
+            "concierge.gateway.dispatch",
+            session_id=session.session_id,
+            tenant_id=session.tenant_id,
+            method=method,
+        ):
+            if method == "initialize":
+                return await self.initialize(session, params)
+            if method == "tools/list":
+                return await self.tools_list(session)
+            if method == "tools/call":
+                return await self.tools_call(session, params)
+            if method == "resources/list":
+                return await self.resources_list(session)
+            if method == "resources/read":
+                return await self.resources_read(session, params)
+            if method == "prompts/list":
+                return await self.prompts_list(session)
+            if method == "prompts/get":
+                return await self.prompts_get(session, params)
+            if method == "ping":
+                return {}
+            raise MethodNotFound(f"unknown method: {method}")
