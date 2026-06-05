@@ -8,10 +8,16 @@ the gateway; in production, restrict them further at the ingress.
 """
 from __future__ import annotations
 
+from typing import TYPE_CHECKING, Any
+
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from ..adapters.manager import AdapterManager
+from ..admin.config_store import ConfigStore
+from ..admin.models import ValidationResult as StoreValidationResult
+from ..admin.redaction import redact_config_diff, redact_config_for_api
+from ..config import GatewayConfig
 from ..core.catalog import Catalog
 from ..core.session import SessionManager
 from ..gateway.service import GatewayService
@@ -45,6 +51,54 @@ class ApprovalDecisionRequest(BaseModel):
     reason: str | None = None
 
 
+class DraftConfigRequest(BaseModel):
+    config: dict[str, Any]
+    created_by: str | None = None
+
+
+class ImportYamlRequest(BaseModel):
+    yaml: str
+    created_by: str | None = None
+    expand_environment: bool = True
+
+
+class ValidationIssueResponse(BaseModel):
+    path: str
+    message: str
+    code: str | None = None
+
+
+class ValidationResponse(BaseModel):
+    ok: bool
+    issues: list[ValidationIssueResponse] = Field(default_factory=list)
+
+
+def _validation_response(result: StoreValidationResult) -> ValidationResponse:
+    return ValidationResponse(
+        ok=result.ok,
+        issues=[
+            ValidationIssueResponse(path=i.path, message=i.message, code=i.code)
+            for i in result.issues
+        ],
+    )
+
+
+def _version_meta(version: Any) -> dict[str, Any]:
+    return {
+        "id": version.id,
+        "status": version.status.value,
+        "created_at": version.created_at.isoformat(),
+        "created_by": version.created_by,
+        "parent_id": version.parent_id,
+        "promoted_at": version.promoted_at.isoformat() if version.promoted_at else None,
+        "validation_ok": version.validation.ok if version.validation else None,
+    }
+
+
+if TYPE_CHECKING:
+    from ..admin.reload import ReloadCoordinator
+
+
 def build_admin_router(
     *,
     auth: AuthProvider,
@@ -57,6 +111,8 @@ def build_admin_router(
     approval_broker: object | None = None,
     approval_store: ApprovalStore | None = None,
     operator_subjects: list[str] | None = None,
+    config_store: ConfigStore | None = None,
+    reload_coordinator: ReloadCoordinator | None = None,
 ) -> APIRouter:
     router = APIRouter(prefix="/admin", tags=["admin"])
     operator_allow = set(operator_subjects or [])
@@ -206,5 +262,227 @@ def build_admin_router(
         body: ApprovalDecisionRequest, operator: AuthResult = Depends(_operator)
     ) -> dict:
         return await _decide(body, operator, granted=False)
+
+    # -- P2 admin runtime configuration --------------------------------------
+
+    def _require_config_store() -> ConfigStore:
+        if config_store is None:
+            raise HTTPException(status_code=501, detail="config store not configured")
+        return config_store
+
+    async def _auth_subject(request: Request) -> AuthResult:
+        return await auth.authenticate(request)
+
+    @router.get("/config/active", dependencies=[Depends(_auth_dep)])
+    async def get_active_config() -> dict:
+        store = _require_config_store()
+        active = await store.get_active_version()
+        if active is None:
+            return {"config": None, "version": None}
+        return {
+            "config": active.redacted_config(),
+            "version": _version_meta(active),
+        }
+
+    @router.get("/config/draft", dependencies=[Depends(_auth_dep)])
+    async def get_draft_config() -> dict:
+        store = _require_config_store()
+        draft = await store.get_draft()
+        if draft is None:
+            return {"config": None, "version": None}
+        return {
+            "config": draft.redacted_config(),
+            "version": _version_meta(draft),
+        }
+
+    @router.put("/config/draft", dependencies=[Depends(_auth_dep)])
+    async def update_draft_config(
+        body: DraftConfigRequest,
+        auth_result: AuthResult = Depends(_auth_subject),
+    ) -> dict:
+        store = _require_config_store()
+        created_by = body.created_by or auth_result.subject
+        draft = await store.create_or_update_draft(body.config, created_by=created_by)
+        return {
+            "config": draft.redacted_config(),
+            "version": _version_meta(draft),
+        }
+
+    @router.post("/config/draft/validate", dependencies=[Depends(_auth_dep)])
+    async def validate_draft_config() -> ValidationResponse:
+        store = _require_config_store()
+        result = await store.validate_draft()
+        return _validation_response(result)
+
+    @router.get("/config/draft/diff", dependencies=[Depends(_auth_dep)])
+    async def preview_draft_diff() -> dict:
+        store = _require_config_store()
+        draft = await store.get_draft()
+        if draft is None:
+            raise HTTPException(status_code=404, detail="no draft config")
+        active = await store.get_active_redacted() or {}
+        diff = redact_config_diff(active, redact_config_for_api(draft.config))
+        return {"diff": diff}
+
+    @router.post("/config/apply", dependencies=[Depends(_auth_dep)])
+    async def apply_draft_config(
+        auth_result: AuthResult = Depends(_auth_subject),
+    ) -> dict:
+        store = _require_config_store()
+        created_by = auth_result.subject
+        draft = await store.get_draft()
+        if draft is None:
+            raise HTTPException(status_code=400, detail="no draft config to apply")
+
+        runtime_applied = False
+        if reload_coordinator is not None:
+            cfg = GatewayConfig.model_validate(draft.config)
+            result = await reload_coordinator.validate_for_apply(
+                cfg,
+                version_id=draft.id,
+                subject=auth_result.subject or "",
+            )
+            if not result.ok or result.bundle is None:
+                raise HTTPException(
+                    status_code=400,
+                    detail={"code": "apply_validate_failed", "message": result.error},
+                )
+            bundle = result.bundle
+            try:
+                apply_result = await reload_coordinator.apply(
+                    bundle,
+                    version_id=draft.id,
+                    subject=auth_result.subject or "",
+                )
+                if not apply_result.ok:
+                    raise HTTPException(
+                        status_code=500,
+                        detail={
+                            "code": "apply_runtime_failed",
+                            "message": apply_result.error,
+                        },
+                    )
+                runtime_applied = True
+            except HTTPException:
+                await bundle.stop()
+                raise
+            except Exception as e:  # noqa: BLE001
+                await bundle.stop()
+                raise HTTPException(status_code=500, detail=str(e)) from e
+
+        try:
+            active = await store.promote_draft_to_active(created_by=created_by)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        return {
+            "version": _version_meta(active),
+            "applied": True,
+            "runtime_applied": runtime_applied,
+        }
+
+    @router.post("/config/reload", dependencies=[Depends(_auth_dep)])
+    async def reload_runtime_config(
+        auth_result: AuthResult = Depends(_auth_subject),
+    ) -> dict:
+        if reload_coordinator is None:
+            raise HTTPException(status_code=501, detail="reload coordinator not configured")
+        store = _require_config_store()
+        active = await store.get_active_version()
+        if active is None:
+            raise HTTPException(status_code=404, detail="no active config to reload")
+        cfg = GatewayConfig.model_validate(active.config)
+        result = await reload_coordinator.validate_for_apply(
+            cfg,
+            version_id=active.id,
+            subject=auth_result.subject or "",
+        )
+        if not result.ok or result.bundle is None:
+            raise HTTPException(
+                status_code=400,
+                detail={"code": "reload_validate_failed", "message": result.error},
+            )
+        apply_result = await reload_coordinator.apply(
+            result.bundle,
+            version_id=active.id,
+            subject=auth_result.subject or "",
+        )
+        if not apply_result.ok:
+            raise HTTPException(
+                status_code=500,
+                detail={"code": "reload_apply_failed", "message": apply_result.error},
+            )
+        return {"reloaded": True, "version_id": active.id}
+
+    @router.post("/config/rollback", dependencies=[Depends(_auth_dep)])
+    async def rollback_config() -> dict:
+        store = _require_config_store()
+        try:
+            rolled = await store.rollback()
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        return {"version": _version_meta(rolled), "rolled_back": True}
+
+    @router.post("/config/import", dependencies=[Depends(_auth_dep)])
+    async def import_config_yaml(
+        body: ImportYamlRequest,
+        auth_result: AuthResult = Depends(_auth_subject),
+    ) -> dict:
+        store = _require_config_store()
+        created_by = body.created_by or auth_result.subject
+        try:
+            draft = await store.import_yaml(
+                body.yaml,
+                created_by=created_by,
+                expand_environment=body.expand_environment,
+            )
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        return {
+            "config": draft.redacted_config(),
+            "version": _version_meta(draft),
+        }
+
+    @router.get("/config/export", dependencies=[Depends(_auth_dep)])
+    async def export_active_config_yaml() -> dict:
+        store = _require_config_store()
+        exported = await store.export_active_yaml_redacted()
+        if exported is None:
+            raise HTTPException(status_code=404, detail="no active config to export")
+        return {"yaml": exported}
+
+    @router.get("/config/versions", dependencies=[Depends(_auth_dep)])
+    async def list_config_versions() -> dict:
+        store = _require_config_store()
+        versions = await store.list_versions()
+        return {
+            "versions": [
+                {
+                    "id": v.id,
+                    "status": v.status.value,
+                    "created_at": v.created_at.isoformat(),
+                    "created_by": v.created_by,
+                    "validation_ok": v.validation_ok,
+                    "parent_id": v.parent_id,
+                    "promoted_at": v.promoted_at.isoformat() if v.promoted_at else None,
+                }
+                for v in versions
+            ]
+        }
+
+    @router.get("/config/status", dependencies=[Depends(_auth_dep)])
+    async def config_runtime_status() -> dict:
+        store = _require_config_store()
+        active = await store.get_active_version()
+        draft = await store.get_draft()
+        return {
+            "config_store": True,
+            "active_version_id": active.id if active else None,
+            "draft_version_id": draft.id if draft else None,
+            "draft_status": draft.status.value if draft else None,
+            "reload_coordinator": reload_coordinator is not None,
+            "catalog_count": await catalog.count(),
+            "session_count": len(await sessions.all()),
+            "servers": [a.health().model_dump() for a in adapters.all()],
+        }
 
     return router
