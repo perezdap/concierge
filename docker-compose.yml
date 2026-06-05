@@ -1,3 +1,34 @@
+# Concierge — local single-node stack (Twelve-Factor App friendly).
+#
+# Operators override *everything* per environment without editing this file or
+# rebuilding the image:
+#
+#   1. config — the gateway YAML. The default below (gateway.example.yaml,
+#      the comprehensive committed example) works with zero setup. To use
+#      your own config without rebuilding the image:
+#
+#        cp config/gateway.example.yaml config/gateway.yaml   # gitignored
+#        $EDITOR config/gateway.yaml                          # tweak as needed
+#        docker compose up --force-recreate
+#
+#      The bind mount under `volumes:` puts your local config/ at
+#      /app/config/ inside the container, so the command below picks up your
+#      gateway.yaml. To switch the active file, override the `command:` in a
+#      docker-compose.override.yml or with `--command` (Compose v2.24+).
+#
+#   2. env_file: ./.env — Compose auto-loads variables from .env into the
+#      gateway's process environment. config/gateway*.yaml uses ${VAR}
+#      placeholders, expanded by load_config() at startup. .env is gitignored;
+#      copy .env.example to .env and fill in the values you need.
+#      Variables not in .env are simply not exported; ${VAR:-default} in the
+#      YAML supplies a fallback.
+#
+#   3. volumes: ./config:/app/config:ro — bind-mounts local config/ read-only
+#      so operator edits to gateway.yaml (or any other file in there) take
+#      effect on `docker compose up --force-recreate` with NO image rebuild.
+#
+# Secrets NEVER live in this file or in the image. See docs/DEPLOYMENT.md
+# ("Twelve-Factor compose") for the full workflow.
 services:
   concierge:
     build:
@@ -6,9 +37,27 @@ services:
     image: concierge:0.1.0
     ports:
       - "8765:8765"
-    command: ["--config", "config/gateway.example.yaml"]
+    # Active config file *inside* the container. The bind mount puts the local
+    # config/ at /app/config/, so the path below resolves against your local
+    # files. To switch configs without editing this file, drop a
+    # docker-compose.override.yml in the same directory that sets a different
+    # `command:` — the example here is just the default.
+    command: ["--config", "/app/config/gateway.example.yaml"]
+    # Secrets / placeholders come from .env (gitignored). Variables not in
+    # .env are simply not exported — ${VAR:-default} in the YAML covers it.
+    env_file:
+      - path: ./.env
+        required: false
+    # Non-secret defaults only. Anything secret stays in .env.
     environment:
-      LOG_LEVEL: INFO
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    # Bind-mount the local config/ read-only so operator edits to
+    # config/gateway.yaml (or any other file in there) take effect on
+    # `docker compose up --force-recreate` with NO image rebuild. The image
+    # also bakes in config/ (so `docker run` without compose works), but
+    # this mount shadows it for the compose path.
+    volumes:
+      - ./config:/app/config:ro
     # Container healthcheck mirrors the k8s liveness probe (GET /healthz).
     # Readiness (GET /readyz) is consumed by k8s/load balancers; for a local
     # smoke test, curl it manually after the stack reports healthy.

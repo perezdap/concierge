@@ -1,5 +1,17 @@
-# Example Concierge configuration.
-# Run: python -m concierge --config config/gateway.example.yaml
+# Example Concierge configuration (committed; safe to share).
+#
+# Run locally:
+#   python -m concierge --config config/gateway.example.yaml
+# Run with Docker Compose:
+#   cp .env.example .env        # gitignored
+#   $EDITOR .env                # set BM_LIVE_TOKEN, NOTES_TOKEN, etc. (or leave blank)
+#   docker compose up --build
+#
+# Environment-variable placeholders in this file (e.g. the BRIDGEMIND-style
+# Authorization headers below) are expanded by load_config() from the process
+# environment at startup. Anything referenced as a placeholder must be
+# exported — typically via .env (Compose auto-loads it) or your secret manager.
+# See docs/DEPLOYMENT.md ("Twelve-Factor compose") and .env.example.
 
 gateway:
   host: 127.0.0.1

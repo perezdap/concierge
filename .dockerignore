@@ -20,3 +20,6 @@ deploy/k8s
 tests
 docs
 *.egg-info
+
+.env
+.env.*
