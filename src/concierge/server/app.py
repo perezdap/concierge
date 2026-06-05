@@ -549,7 +549,7 @@ def _build_oauth_deps(
         audit=audit,
     )
     gw = config.gateway
-    host = gw.host if gw.host not in ("0.0.0.0", "::") else "127.0.0.1"
+    host = gw.host if gw.host not in ("0.0.0.0", "::") else "127.0.0.1"  # nosec B104
     public_base_url = f"http://{host}:{gw.port}"
     return AdminOAuthDeps(
         auth=auth,
