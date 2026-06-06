@@ -329,11 +329,41 @@ class GatewayConfig(BaseModel):
 _ENV_VAR_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
 
 
+def _comment_start(line: str) -> int | None:
+    """Return the index of the first unquoted ``#`` in ``line`` (YAML comment
+    start), or ``None`` if the line has no comment.
+
+    Tracks a tiny single/double-quote state machine so that a ``#`` inside a
+    quoted scalar (``"a # b"`` / ``'a # b'``) is not treated as a comment
+    introducer. Backslash escapes are not handled — YAML single-quoted scalars
+    do not process escapes, and double-quoted ones use a small subset that
+    does not produce ``#``; keeping this simple matches the operator's
+    documentation guidance and avoids pretending to be a full YAML parser.
+    """
+    in_single = False
+    in_double = False
+    for i, ch in enumerate(line):
+        if ch == "'" and not in_double:
+            in_single = not in_single
+        elif ch == '"' and not in_single:
+            in_double = not in_double
+        elif ch == "#" and not in_single and not in_double:
+            return i
+    return None
+
+
 def expand_env(text: str) -> str:
     """Substitute ${VAR} / ${VAR:-default} from the environment.
 
     A ${VAR} with no default that is unset is an error — surfacing it beats
     silently passing the literal "${VAR}" through as (e.g.) a secret.
+
+    YAML ``#`` comments are skipped: ``${VAR}`` references appearing inside
+    a comment are not expanded and do not trigger the undefined-variable
+    error. This lets operators write helpful documentation like
+    ``# set ${BM_LIVE_TOKEN} in .env`` without breaking startup. References
+    that genuinely appear in YAML values (outside any comment, and not
+    inside quoted scalars that contain a ``#``) still raise as before.
     """
     missing: list[str] = []
 
@@ -347,14 +377,32 @@ def expand_env(text: str) -> str:
         missing.append(name)
         return ""
 
-    expanded = _ENV_VAR_RE.sub(_sub, text)
+    # A single shared `missing` list across the whole call. References inside
+    # YAML comments are never scanned, so they cannot end up here; references
+    # in actual values that are unset-without-default all get reported in one
+    # sorted, de-duplicated error at the end.
+    out_lines: list[str] = []
+    for line in text.splitlines(keepends=True):
+        # Strip the trailing newline (if any) so _comment_start indexes the
+        # raw scalar; we re-attach it afterwards so output byte-equivalence
+        # with the input is preserved.
+        if line.endswith("\n"):
+            body, nl = line[:-1], "\n"
+        else:
+            body, nl = line, ""
+        cut = _comment_start(body)
+        if cut is None:
+            out_lines.append(_ENV_VAR_RE.sub(_sub, body) + nl)
+        else:
+            out_lines.append(_ENV_VAR_RE.sub(_sub, body[:cut]) + body[cut:] + nl)
+
     if missing:
         names = ", ".join(sorted(set(missing)))
         raise ValueError(
             f"config references undefined environment variable(s): {names}. "
-            "Set them, or supply a default with ${VAR:-default}."
+            f"Set them, or supply a default with ${{VAR:-default}}."
         )
-    return expanded
+    return "".join(out_lines)
 
 
 def load_config(path: str | Path) -> GatewayConfig:
