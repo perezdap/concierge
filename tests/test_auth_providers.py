@@ -141,6 +141,26 @@ async def test_bearer_rejects_invalid_token():
 
 
 @pytest.mark.asyncio
+async def test_bearer_rejects_all_when_empty_string_in_tokens():
+    """A config like bearer_tokens: [\"\"] must reject every request."""
+    auth = StaticBearerAuth([""])
+    with pytest.raises(Unauthorized, match="invalid bearer"):
+        await auth.authenticate(_request(authorization="Bearer " ''))
+    with pytest.raises(Unauthorized, match="invalid bearer"):
+        await auth.authenticate(_request(authorization="Bearer any-token"))
+
+
+@pytest.mark.asyncio
+async def test_bearer_rejects_all_when_unset_var_expands_to_empty():
+    """${UNSET:-} expands to \"; the resulting empty digest list must reject all."""
+    auth = StaticBearerAuth(["${UNSET:-}"])
+    with pytest.raises(Unauthorized, match="invalid bearer"):
+        await auth.authenticate(_request(authorization="Bearer "))
+    with pytest.raises(Unauthorized, match="invalid bearer"):
+        await auth.authenticate(_request(authorization="Bearer anything"))
+
+
+@pytest.mark.asyncio
 async def test_localhost_auth_allows_loopback():
     res = await LocalhostAllowAuth().authenticate(_request(client_host="127.0.0.1"))
     assert res.subject == "localhost"

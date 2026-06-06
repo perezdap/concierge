@@ -160,7 +160,9 @@ class StaticBearerAuth(AuthProvider):
     """
 
     def __init__(self, tokens: list[str]) -> None:
-        self._digests = [hashlib.sha256(t.encode("utf-8")).digest() for t in tokens]
+        # Defensive: drop empty strings so a mis-configured ${VAR:-} that expands
+        # to "" does not accidentally allow "Authorization: Bearer ".
+        self._digests = [hashlib.sha256(t.encode("utf-8")).digest() for t in tokens if t]
 
     def matches(self, request: Request) -> bool:
         return _bearer_token(request) is not None
@@ -169,6 +171,8 @@ class StaticBearerAuth(AuthProvider):
         token = _bearer_token(request)
         if token is None:
             raise Unauthorized("missing bearer token")
+        if not self._digests:
+            raise Unauthorized("invalid bearer token")
         presented = hashlib.sha256(token.encode("utf-8")).digest()
         matched = False
         for digest in self._digests:
