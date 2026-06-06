@@ -293,6 +293,11 @@ profiles:
       - server: bridgemind
 ```
 
+> Prefer the browser UI? The same upstreams and profiles can be edited on the
+> `/admin/upstreams` and `/admin/profiles` pages. For a field-by-field reference
+> and the selector matching rules (including the common "Names" 0-match trap),
+> see [Configuring upstreams and profiles](docs/ADMIN_CONSOLE.md#configuring-upstreams-and-profiles).
+
 ## Behavior the operator should remember
 
 - Default bind is **127.0.0.1**. Public bind requires `gateway.bind_public: true`.

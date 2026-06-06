@@ -4,8 +4,10 @@
 > to running the admin UI locally or in Docker.
 
 Browser UI for operating a Concierge gateway: health, upstream status, catalog
-counts, sessions, and runtime config version. Served under `/admin/` as a
-Vite-built React SPA.
+counts, sessions, and runtime config version. It also ships two config editor
+pages — **Upstreams** (`/admin/upstreams`) and **Profiles** (`/admin/profiles`) —
+documented under [Configuring upstreams and profiles](#configuring-upstreams-and-profiles).
+Served under `/admin/` as a Vite-built React SPA.
 
 ## Prerequisites
 
@@ -40,6 +42,148 @@ Vite-built React SPA.
 | **bearer** | Remote host or manual switch | Prompts once per session; token stored in `sessionStorage` and sent on all `api.ts` requests |
 
 Toggle mode from the header bar. Do not paste production secrets into shared machines.
+
+## Configuring upstreams and profiles
+
+The **Upstreams** and **Profiles** pages edit the runtime config *draft*. Nothing
+you change here is live until you apply the draft from the **Pending changes**
+banner (it appears across the admin app whenever the draft differs from the
+active config). The source of truth for the fields below is
+`frontend/src/pages/Upstreams.tsx` and `frontend/src/pages/Profiles.tsx`.
+
+### Mental model
+
+An upstream is cataloged into normalized entries; a profile's selectors *filter*
+that catalog down to the set published to a session:
+
+```
+upstream (id, default_tags, default_categories)
+      │   adapter discovers + sanitizes each primitive
+      ▼
+catalog entry
+   canonical_name = "<upstream-id>__<primitive>"   e.g. bridgemind__create_task
+   tags       = upstream default_tags
+   categories = upstream default_categories
+      │
+      │   profile selectors filter
+      │     • AND within one selector (all non-blank fields must match)
+      │     • OR  across selectors    (any selector matching publishes the entry)
+      ▼
+published set ──► tools/list · resources/list · prompts/list  (this session)
+```
+
+Simplest possible profile: a single selector with **Server** = `bridgemind` and
+every other field blank publishes *everything* from the `bridgemind` upstream. A
+blank field is a wildcard (no constraint) — not an empty set.
+
+### Upstreams page (`/admin/upstreams`)
+
+Each upstream is selected from the left list; the editor shows only the fields
+relevant to the chosen transport.
+
+| Field | Type / values | Notes |
+|-------|---------------|-------|
+| **ID** | string, required | Stable identifier for the upstream. Immutable after creation (the input is disabled when editing). This is the exact string a profile selector's **Server** field matches against, and it prefixes every `canonical_name` (`<id>__<primitive>`). |
+| **Transport** | `stdio` · `streamable_http` · `sse_legacy` · `custom` | Selects which connection fields render below. |
+| **Command** | space-separated argv | `stdio` only. e.g. `python -m my_server`. |
+| **URL** | string | `streamable_http` only. The MCP endpoint. |
+| **SSE URL** / **POST URL** | string each | `sse_legacy` only. Event stream URL and the message POST URL. |
+| **Custom kind** | string | `custom` only. The key of a registered custom-transport adapter. |
+| **Headers** | textarea, one `Name: value` per line | `streamable_http` / `sse_legacy` only. Values may use `secret_ref:VAR` indirection (resolved from the environment/secret store) and are **redacted** in API responses. Existing write-only/redacted values are preserved on save unless you type a new value — a hint appears when redacted values are present. |
+| **Default tags** | comma-separated | Propagated onto **every** primitive cataloged from this upstream — they become each entry's `tags`, which a profile selector's **Tags** field matches against. |
+
+Buttons: **Save to draft**, **Test connection** (probes the upstream and reports
+latency + discovered tool/resource/prompt counts), **Refresh catalog** (re-reads
+the upstream's primitives; disabled for an unsaved new upstream — apply the draft
+first), **Delete** (existing upstreams only).
+
+> **Not editable here:** `default_categories`, `default_risk`, `requires_auth`,
+> and `isolation` are real upstream settings but the form does not render inputs
+> for them — set them in `config/gateway.yaml` (or via the upstreams API). The
+> values still take effect; they're just config-only for now.
+
+### Profiles page (`/admin/profiles`)
+
+A profile is a name plus a list of *selectors*. Selectors are resolved against
+the **live** catalog at apply time, so a profile keeps working even if an
+upstream is reconfigured.
+
+| Field | Type / values | Notes |
+|-------|---------------|-------|
+| **Name** | string, required | Identifier passed to `gateway_use_profile`. Immutable after creation. |
+| **Auto-apply at session init** | checkbox | When on, the profile's published set is applied at session initialize, so its tools appear in the *first* `tools/list` with no discover/enable round-trip. |
+| **Description** | string | Free text. |
+
+Each **Selector** (add/remove with the buttons; a profile may have many):
+
+| Selector field | Type / values | Match semantics |
+|----------------|---------------|-----------------|
+| **Server** | string | Exact, **case-sensitive** match against an upstream **ID**. Blank = any server. |
+| **Primitive type** | `any` · `tool` · `resource` · `prompt` | `any` (blank) applies no type filter. |
+| **Tags** | comma-separated | Entry must carry **all** listed tags (case-insensitive subset). Matches against the entry's `tags` (i.e. the upstream's **Default tags**). Blank = no tag filter. |
+| **Categories** | comma-separated | Same subset semantics as Tags, against the entry's `categories`. Blank = no category filter. |
+| **Names** | comma-separated | A **whitelist of canonical names** (`<upstream-id>__<primitive>`, e.g. `bridgemind__create_task`), matched exactly. Blank = any name. **This is not a label or an upstream id** — see the trap below. |
+
+Buttons: **Add selector**, **Save to draft**, **Preview**, **Duplicate**
+(existing), **Delete** (existing). **Preview** resolves the selectors against the
+live catalog and shows the match count, per-selector warnings (e.g. *"selector 0
+matched no catalog entries"* with the offending fields), and a table of the first
+50 matched primitives (Name / Server / Kind).
+
+#### Selector matching semantics
+
+- **Within one selector, all non-blank fields AND together** — a primitive must
+  satisfy every field you filled in to match that selector.
+- **Across selectors, results OR together** — a primitive is published if *any*
+  selector in the profile matches it.
+- **A blank field is a wildcard**, never an empty set.
+- **Server** is an exact, case-sensitive comparison against the upstream ID.
+- **Tags / Categories** require the entry to contain *all* listed values
+  (case-insensitive subset), matched against the values the upstream contributes
+  via its Default tags / categories.
+- **Names** matches the entry's `canonical_name` exactly (the `<id>__<primitive>`
+  form shown in the Preview table's **Name** column). The field hint mentions
+  upstream-side names, but the reliable, verified match is the canonical name —
+  copy values straight out of the Preview table.
+
+#### The Names trap (common 0-match cause)
+
+Putting the **upstream's id or display name** into **Names** matches nothing,
+because Names is a whitelist of *primitive* canonical names, not a server label.
+For example:
+
+```
+Selector
+  Server: bridgemind
+  Names:  bridgemind        ← WRONG — this is a primitive-name whitelist
+```
+
+Preview returns `Matched 0 primitives` with a warning like
+`selector 0 matched no catalog entries (server=bridgemind, names=['bridgemind'])`.
+
+**Fix:** clear **Names** to publish everything from that server, or list real
+canonical names such as `bridgemind__create_task` (copy them from the Preview
+table).
+
+### Choosing profile shapes
+
+- **One auto-apply profile (simplest dev setup).** A single profile with
+  `auto_apply` on publishes a fixed set at session init — ideal when every client
+  should see the same tools and you don't want a discover/enable round-trip.
+- **Several on-demand profiles (per-client scoping).** Leave `auto_apply` off and
+  have clients call `gateway_use_profile` to swap published sets mid-session. Each
+  switch emits `notifications/tools/list_changed`; the client must re-fetch
+  `tools/list` for newly published tools to become callable.
+- **Tag-based themed profiles (cross-upstream bundles).** Use a **Tags** selector
+  with no **Server** to gather primitives across multiple upstreams that share a
+  Default tag — handy for capability bundles like `read-only` or `support`.
+
+Common mistakes to avoid:
+
+- Putting the upstream id/name in **Names** (see the Names trap above).
+- Referencing a brand-new upstream before applying the draft — the catalog won't
+  contain it yet, so selectors match nothing. Apply, then **Refresh catalog**.
+- Case-mismatching **Server** — it is exact, case-sensitive.
 
 ## Production build
 
