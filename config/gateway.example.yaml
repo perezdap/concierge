@@ -19,7 +19,7 @@ gateway:
   # Docker host.  For local dev without Docker, 127.0.0.1 is safer.
   host: 0.0.0.0
   port: 8765
-  bind_public: false
+  bind_public: true
   path: /mcp
   allowed_origins:
     - http://localhost
@@ -67,7 +67,7 @@ upstream_servers:
     transport: streamable_http
     url: https://notes.example.internal/mcp
     headers:
-      Authorization: "Bearer ${NOTES_TOKEN}"   # operator substitutes via env-templating
+      Authorization: "Bearer ${NOTES_TOKEN:-}"   # operator substitutes via env-templating
     default_risk: medium
     default_tags: ["notes"]
     default_categories: ["productivity"]
@@ -84,7 +84,7 @@ upstream_servers:
     transport: sse_legacy
     sse_url: https://jira.example.internal/mcp/sse
     headers:
-      Authorization: "Bearer ${JIRA_TOKEN}"
+      Authorization: "Bearer ${JIRA_TOKEN:-}"
     default_risk: high
     default_tags: ["jira"]
     default_categories: ["ticketing"]

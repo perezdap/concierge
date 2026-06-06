@@ -148,22 +148,37 @@ def _run_init_command(args: argparse.Namespace) -> int:
             token_line_idx = i
             token_value = ""
 
-    if token_value:
-        print("GATEWAY_TOKEN already set — idempotent, no changes made.")
-        return 0
+    token_to_sync = token_value
+    is_new = False
 
-    new_token = secrets.token_urlsafe(32)
-    new_line = f"GATEWAY_TOKEN={new_token}\n"
+    if not token_value:
+        token_to_sync = secrets.token_urlsafe(32)
+        is_new = True
+        new_line = f"GATEWAY_TOKEN={token_to_sync}\n"
 
-    if token_line_idx is not None:
-        lines[token_line_idx] = new_line
-    else:
-        lines.append("\n")
-        lines.append("# Auto-generated on first run (concierge init)\n")
-        lines.append(new_line)
+        if token_line_idx is not None:
+            lines[token_line_idx] = new_line
+        else:
+            lines.append("\n")
+            lines.append("# Auto-generated on first run (concierge init)\n")
+            lines.append(new_line)
 
-    env_path.write_text("".join(lines))
-    print(f"==> First-run admin token: {new_token}   (also saved to {env_path})")
+        env_path.write_text("".join(lines))
+        print(f"==> First-run admin token: {token_to_sync}   (also saved to {env_path})")
+
+    # Sync GATEWAY_TOKEN to config/.gateway_token for container accessibility on first boot
+    config_dir = env_path.parent / "config"
+    if config_dir.exists() and config_dir.is_dir():
+        token_file = config_dir / ".gateway_token"
+        try:
+            token_file.write_text(token_to_sync, encoding="utf-8")
+            print(f"Synced GATEWAY_TOKEN to {token_file}")
+        except Exception as e:
+            print(f"Failed to sync token to {token_file}: {e}")
+
+    if not is_new:
+        print("GATEWAY_TOKEN already set — idempotent, env file not modified.")
+
     return 0
 
 
