@@ -226,7 +226,6 @@ def test_default_binding_is_loopback_only() -> None:
 def test_build_app_restores_upstreams_from_config_store(tmp_path) -> None:
     """Upstreams applied via the admin panel survive a process restart."""
     import asyncio
-    import tempfile
 
     from concierge.admin.config_store import SqliteConfigStore
     from concierge.config import GatewayConfig, StorageConfig
