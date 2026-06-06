@@ -1,5 +1,11 @@
 # Concierge — local single-node stack (Twelve-Factor App friendly).
 #
+# Zero-edit first run:
+#   docker compose up --build
+#
+# The init service auto-creates .env from .env.example and generates a
+# GATEWAY_TOKEN on first boot.  Re-running does NOT regenerate the token.
+#
 # Operators override *everything* per environment without editing this file or
 # rebuilding the image:
 #
@@ -11,7 +17,7 @@
 #        $EDITOR config/gateway.yaml                          # tweak as needed
 #        docker compose up --force-recreate
 #
-#      The bind mount under `volumes:` puts your local config/ at
+#      The bind mount under `volumes:` puts the local config/ at
 #      /app/config/ inside the container, so the command below picks up your
 #      gateway.yaml. To switch the active file, override the `command:` in a
 #      docker-compose.override.yml or with `--command` (Compose v2.24+).
@@ -19,7 +25,7 @@
 #   2. env_file: ./.env — Compose auto-loads variables from .env into the
 #      gateway's process environment. config/gateway*.yaml uses ${VAR}
 #      placeholders, expanded by load_config() at startup. .env is gitignored;
-#      copy .env.example to .env and fill in the values you need.
+#      it is created automatically by the init service on first run.
 #      Variables not in .env are simply not exported; ${VAR:-default} in the
 #      YAML supplies a fallback.
 #
@@ -30,7 +36,23 @@
 # Secrets NEVER live in this file or in the image. See docs/DEPLOYMENT.md
 # ("Twelve-Factor compose") for the full workflow.
 services:
+  init:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: concierge:0.1.0
+    volumes:
+      - .:/workspace
+    working_dir: /workspace
+    command: ["init"]
+    env_file:
+      - path: ./.env
+        required: false
+
   concierge:
+    depends_on:
+      init:
+        condition: service_completed_successfully
     build:
       context: .
       dockerfile: Dockerfile

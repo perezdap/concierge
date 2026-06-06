@@ -19,7 +19,11 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import os
+import secrets
+import shutil
 import sys
+from pathlib import Path
 
 import uvicorn
 
@@ -117,6 +121,67 @@ async def _run_approval_command(args: argparse.Namespace) -> int:
         await store.aclose()
 
 
+def _run_init_command(args: argparse.Namespace) -> int:
+    """One-shot first-run helper: ensure .env exists and contains a GATEWAY_TOKEN."""
+    env_path = Path(args.env_file)
+    example_path = Path(args.env_example)
+
+    if not env_path.exists():
+        if example_path.exists():
+            shutil.copy(example_path, env_path)
+            print(f"Created {env_path} from {example_path}")
+        else:
+            print(f" neither {env_path} nor {example_path} found; creating empty {env_path}")
+            env_path.write_text("\n")
+
+    content = env_path.read_text()
+    lines = content.splitlines(keepends=True)
+
+    token_line_idx: int | None = None
+    token_value = ""
+    for i, line in enumerate(lines):
+        if line.strip().startswith("GATEWAY_TOKEN="):
+            token_line_idx = i
+            token_value = line.split("=", 1)[1].strip()
+            break
+        if line.strip().startswith("# GATEWAY_TOKEN="):
+            token_line_idx = i
+            token_value = ""
+
+    token_to_sync = token_value
+    is_new = False
+
+    if not token_value:
+        token_to_sync = secrets.token_urlsafe(32)
+        is_new = True
+        new_line = f"GATEWAY_TOKEN={token_to_sync}\n"
+
+        if token_line_idx is not None:
+            lines[token_line_idx] = new_line
+        else:
+            lines.append("\n")
+            lines.append("# Auto-generated on first run (concierge init)\n")
+            lines.append(new_line)
+
+        env_path.write_text("".join(lines))
+        print(f"==> First-run admin token: {token_to_sync}   (also saved to {env_path})")
+
+    # Sync GATEWAY_TOKEN to config/.gateway_token for container accessibility on first boot
+    config_dir = env_path.parent / "config"
+    if config_dir.exists() and config_dir.is_dir():
+        token_file = config_dir / ".gateway_token"
+        try:
+            token_file.write_text(token_to_sync, encoding="utf-8")
+            print(f"Synced GATEWAY_TOKEN to {token_file}")
+        except Exception as e:
+            print(f"Failed to sync token to {token_file}: {e}")
+
+    if not is_new:
+        print("GATEWAY_TOKEN already set — idempotent, env file not modified.")
+
+    return 0
+
+
 def _serve(args: argparse.Namespace) -> int:
     cfg = load_config(args.config)
     if not cfg.gateway.bind_public and cfg.gateway.host not in ("127.0.0.1", "localhost", "::1"):
@@ -179,6 +244,10 @@ def main(argv: list[str] | None = None) -> int:
     )
     a_deny.add_argument("--reason", default=None)
 
+    init = sub.add_parser("init", help="First-run helper: create .env and auto-generate GATEWAY_TOKEN.")
+    init.add_argument("--env-file", default=".env", help="Path to the .env file to create/update.")
+    init.add_argument("--env-example", default=".env.example", help="Template to copy when .env is missing.")
+
     args = parser.parse_args(argv)
 
     if args.command == "token":
@@ -186,6 +255,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "approval":
         return asyncio.run(_run_approval_command(args))
+
+    if args.command == "init":
+        return _run_init_command(args)
 
     if not args.config:
         parser.error("--config is required to run the gateway")

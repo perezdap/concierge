@@ -39,6 +39,7 @@ Thumbs.db
 .env
 .env.*
 config/gateway.yaml
+config/.gateway_token
 
 # Frontend local dependencies/build output
 node_modules/

@@ -428,5 +428,17 @@ def expand_env(text: str) -> str:
 
 
 def load_config(path: str | Path) -> GatewayConfig:
+    if "GATEWAY_TOKEN" not in os.environ:
+        config_dir = Path(path).parent
+        token_file = config_dir / ".gateway_token"
+        if token_file.exists():
+            try:
+                token = token_file.read_text(encoding="utf-8").strip()
+                if token:
+                    os.environ["GATEWAY_TOKEN"] = token
+                    _log.info("Loaded GATEWAY_TOKEN from %s", token_file)
+            except Exception as e:
+                _log.warning("Failed to read token file %s: %s", token_file, e)
+
     data = yaml.safe_load(expand_env(Path(path).read_text())) or {}
     return GatewayConfig.model_validate(data)

@@ -7,25 +7,30 @@
 #   $EDITOR .env                # set BM_LIVE_TOKEN, NOTES_TOKEN, etc. (or leave blank)
 #   docker compose up --build
 #
-# Environment-variable placeholders in this file (e.g. the BRIDGEMIND-style
-# Authorization headers below) are expanded by load_config() from the process
-# environment at startup. Anything referenced as a placeholder must be
-# exported — typically via .env (Compose auto-loads it) or your secret manager.
+# Environment-variable placeholders in this file are expanded by load_config()
+# from the process environment at startup.  Secrets are supplied via .env
+# (Compose auto-loads it) or your secret manager.  Upstream credentials that
+# are not needed can be left blank — the ${VAR:-} syntax lets the gateway start
+# cleanly and warns about each empty placeholder in the logs.
 # See docs/DEPLOYMENT.md ("Twelve-Factor compose") and .env.example.
 
 gateway:
-  host: 127.0.0.1
+  # 0.0.0.0 is required inside a container so the port is reachable from the
+  # Docker host.  For local dev without Docker, 127.0.0.1 is safer.
+  host: 0.0.0.0
   port: 8765
-  bind_public: false
+  bind_public: true
   path: /mcp
   allowed_origins:
     - http://localhost
     - http://127.0.0.1
 
 auth:
-  # 'localhost' = allow only loopback. Other options: 'none' | 'bearer'.
-  type: localhost
-  bearer_tokens: []
+  # Docker-friendly default: bearer token auth.  The token is read from
+  # $GATEWAY_TOKEN (auto-generated on first run; see README Docker Quickstart).
+  # For local dev on loopback you can switch to 'localhost' (no token needed).
+  type: bearer
+  bearer_tokens: ["${GATEWAY_TOKEN:-}"]
 
 log_level: INFO
 catalog_refresh_interval_s: 300
@@ -62,7 +67,7 @@ upstream_servers:
     transport: streamable_http
     url: https://notes.example.internal/mcp
     headers:
-      Authorization: "Bearer ${NOTES_TOKEN}"   # operator substitutes via env-templating
+      Authorization: "Bearer ${NOTES_TOKEN:-}"   # operator substitutes via env-templating
     default_risk: medium
     default_tags: ["notes"]
     default_categories: ["productivity"]
@@ -79,7 +84,7 @@ upstream_servers:
     transport: sse_legacy
     sse_url: https://jira.example.internal/mcp/sse
     headers:
-      Authorization: "Bearer ${JIRA_TOKEN}"
+      Authorization: "Bearer ${JIRA_TOKEN:-}"
     default_risk: high
     default_tags: ["jira"]
     default_categories: ["ticketing"]

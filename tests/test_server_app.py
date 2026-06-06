@@ -1,6 +1,7 @@
 """App factory, admin routes, and optional stdio upstream integration."""
 from __future__ import annotations
 
+import os
 import pytest
 from fastapi.testclient import TestClient
 
@@ -55,6 +56,24 @@ def test_load_config_from_example_yaml(tmp_path) -> None:
     cfg = load_config(example)
     assert cfg.gateway.port == 9999
     assert cfg.auth.type == "none"
+
+
+def test_load_config_with_gateway_token_fallback(tmp_path, monkeypatch) -> None:
+    # Clear GATEWAY_TOKEN from env to test fallback
+    monkeypatch.delenv("GATEWAY_TOKEN", raising=False)
+    
+    config_file = tmp_path / "gateway.yaml"
+    config_file.write_text(
+        "gateway:\n  port: 9999\nauth:\n  type: bearer\n  bearer_tokens: [\"${GATEWAY_TOKEN:-}\"]\n",
+        encoding="utf-8",
+    )
+    
+    token_file = tmp_path / ".gateway_token"
+    token_file.write_text("my-secret-fallback-token", encoding="utf-8")
+    
+    cfg = load_config(config_file)
+    assert os.environ["GATEWAY_TOKEN"] == "my-secret-fallback-token"
+    assert cfg.auth.bearer_tokens == ["my-secret-fallback-token"]
 
 
 def test_echo_stdio_upstream_catalog_refresh(echo_client: TestClient) -> None:

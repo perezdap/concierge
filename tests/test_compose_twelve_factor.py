@@ -159,7 +159,7 @@ def test_env_example_acknowledges_core_tokens():
     """The template must call out the tokens the example YAML references,
     otherwise operators won't know what to put in .env."""
     text = ENV_EXAMPLE.read_text(encoding="utf-8")
-    for token in ("BM_LIVE_TOKEN", "NOTES_TOKEN", "JIRA_TOKEN"):
+    for token in ("GATEWAY_TOKEN", "NOTES_TOKEN", "JIRA_TOKEN"):
         assert token in text, f".env.example should reference {token} (used by the example config)"
 
 
