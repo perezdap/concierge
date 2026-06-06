@@ -3,10 +3,33 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import Any
 
 from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse
+from starlette.responses import Response
 from starlette.staticfiles import StaticFiles
+
+# Vite emits content-hashed asset filenames (e.g. index-DQ4TiwWc.js), so the
+# bytes behind a given URL never change -- they are safe to cache forever.
+_ASSET_CACHE_CONTROL = "public, max-age=31536000, immutable"
+# The SPA shell (index.html) references the current asset hashes, so it must
+# never be cached -- otherwise a client traps itself on stale asset names.
+_SHELL_CACHE_HEADERS = {
+    "Cache-Control": "no-cache, no-store, must-revalidate",
+    "Pragma": "no-cache",
+    "Expires": "0",
+}
+
+
+class AdminAssetsStatic(StaticFiles):
+    """StaticFiles that marks hashed admin assets as immutably cacheable."""
+
+    async def get_response(self, path: str, scope: Any) -> Response:
+        response = await super().get_response(path, scope)
+        if response.status_code == 200:
+            response.headers["Cache-Control"] = _ASSET_CACHE_CONTROL
+        return response
 
 # First path segment under /admin reserved for JSON API routers (not SPA shell).
 _API_SEGMENTS = frozenset({
@@ -87,7 +110,7 @@ def install_admin_ui(app: FastAPI) -> Path | None:
     if assets_dir.is_dir():
         app.mount(
             "/admin/assets",
-            StaticFiles(directory=str(assets_dir)),
+            AdminAssetsStatic(directory=str(assets_dir)),
             name="admin-ui-assets",
         )
 
@@ -99,7 +122,7 @@ def install_admin_ui(app: FastAPI) -> Path | None:
     async def _admin_spa_index_fallback(request: Request, call_next):  # type: ignore[no-untyped-def]
         ui_index: Path | None = getattr(request.app.state, "admin_ui_index", None)
         if ui_index is not None and wants_admin_spa_index(request):
-            return FileResponse(ui_index)
+            return FileResponse(ui_index, headers=dict(_SHELL_CACHE_HEADERS))
         return await call_next(request)
 
     return dist

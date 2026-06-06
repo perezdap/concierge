@@ -59,6 +59,39 @@ def test_admin_spa_index_and_api_precedence(
         assert "console.log" in asset.text
 
 
+def test_admin_static_cache_headers(
+    gateway_config: GatewayConfig,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """Hashed assets are immutably cacheable; the SPA shell is never cached.
+
+    Regression for the blank-page-on-hard-refresh bug: without explicit
+    Cache-Control on hashed assets, browsers heuristically cache Vite bundles
+    and can serve a corrupt/partial response, leaving the React tree unmounted.
+    """
+    dist = tmp_path / "ui"
+    assets = dist / "assets"
+    assets.mkdir(parents=True)
+    (assets / "app.js").write_text("console.log('ok');", encoding="utf-8")
+    (dist / "index.html").write_text(
+        "<html><body>Admin UI</body></html>", encoding="utf-8"
+    )
+    monkeypatch.setenv("CONCIERGE_ADMIN_UI_DIST", str(dist))
+
+    with TestClient(build_app(gateway_config)) as client:
+        asset = client.get("/admin/assets/app.js")
+        assert asset.status_code == 200
+        assert asset.headers["cache-control"] == "public, max-age=31536000, immutable"
+
+        for path in ("/admin/", "/admin/upstreams", "/admin/profiles"):
+            shell = client.get(path, headers={"Accept": "text/html"})
+            assert shell.status_code == 200, path
+            cache_control = shell.headers["cache-control"]
+            assert "no-cache" in cache_control, (path, cache_control)
+            assert "no-store" in cache_control, (path, cache_control)
+
+
 def test_admin_ui_absent_is_noop(gateway_config: GatewayConfig, monkeypatch) -> None:
     monkeypatch.setattr(
         "concierge.server.admin_static.resolve_admin_ui_dist",
