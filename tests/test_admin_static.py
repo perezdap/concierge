@@ -92,6 +92,66 @@ def test_admin_static_cache_headers(
             assert "no-store" in cache_control, (path, cache_control)
 
 
+def _make_dist(tmp_path: Path, monkeypatch) -> Path:
+    """Write a minimal Vite-style dist tree and point the gateway at it."""
+    dist = tmp_path / "ui"
+    assets = dist / "assets"
+    assets.mkdir(parents=True)
+    (assets / "app.js").write_text("console.log('ok');", encoding="utf-8")
+    (dist / "index.html").write_text(
+        "<html><body>Admin UI</body></html>", encoding="utf-8"
+    )
+    monkeypatch.setenv("CONCIERGE_ADMIN_UI_DIST", str(dist))
+    return dist
+
+
+def test_admin_root_redirects_to_slash(
+    gateway_config: GatewayConfig,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """GET /admin (no trailing slash) is a 308 to the canonical /admin/.
+
+    Regression for GET /admin returning {"detail": "Not Found"} because no
+    route claimed the bare prefix.
+    """
+    _make_dist(tmp_path, monkeypatch)
+    with TestClient(build_app(gateway_config)) as client:
+        resp = client.get("/admin", follow_redirects=False)
+        assert resp.status_code == 308
+        assert resp.headers["location"] == "/admin/"
+
+
+def test_admin_unknown_html_path_serves_spa_shell(
+    gateway_config: GatewayConfig,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """Any HTML GET under /admin/ that no API segment claims serves the shell —
+    deep React Router routes and stray asset probes alike."""
+    _make_dist(tmp_path, monkeypatch)
+    with TestClient(build_app(gateway_config)) as client:
+        for path in ("/admin/favicon.ico", "/admin/some/deep/route"):
+            resp = client.get(path, headers={"Accept": "text/html"})
+            assert resp.status_code == 200, path
+            assert "Admin UI" in resp.text, path
+
+
+def test_admin_asset_probe_does_not_trigger_auth(
+    bearer_gateway_config: GatewayConfig,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """Under bearer auth, a browser HTML probe to an unknown /admin path gets the
+    SPA shell, not a 401 — the catch-all route has no auth dependency, so probes
+    like /admin/favicon.ico never reach the auth-protected API router."""
+    _make_dist(tmp_path, monkeypatch)
+    with TestClient(build_app(bearer_gateway_config)) as client:
+        resp = client.get("/admin/favicon.ico", headers={"Accept": "text/html"})
+        assert resp.status_code == 200
+        assert "Admin UI" in resp.text
+
+
 def test_admin_ui_absent_is_noop(gateway_config: GatewayConfig, monkeypatch) -> None:
     monkeypatch.setattr(
         "concierge.server.admin_static.resolve_admin_ui_dist",
