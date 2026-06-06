@@ -7,12 +7,14 @@ import {
   type UpstreamRecord,
   type UpstreamTransport,
 } from "../api";
+import {
+  headersToText,
+  isPreservedHeaderValue,
+  prepareHeadersForSave,
+  validateHeadersText,
+} from "../upstreamHeaders";
 
 const TRANSPORTS: UpstreamTransport[] = ["stdio", "streamable_http", "sse_legacy", "custom"];
-
-/** Matches backend ``REDACTED_VALUE`` and write-only display forms. */
-const REDACTED_HEADER = "***";
-const WRITE_ONLY_HEADER = { __write_only__: true as const };
 
 function emptyUpstream(): UpstreamRecord {
   return {
@@ -34,61 +36,12 @@ function textToCommand(text: string): string[] {
   return text.trim() ? text.trim().split(/\s+/) : [];
 }
 
-function headersToText(headers: Record<string, string> | undefined): string {
-  if (!headers || Object.keys(headers).length === 0) {
-    return "";
-  }
-  return Object.entries(headers)
-    .map(([k, v]) => `${k}: ${v}`)
-    .join("\n");
-}
-
-function textToHeaders(text: string): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (const line of text.split("\n")) {
-    const trimmed = line.trim();
-    if (!trimmed) continue;
-    const idx = trimmed.indexOf(":");
-    if (idx < 1) continue;
-    out[trimmed.slice(0, idx).trim()] = trimmed.slice(idx + 1).trim();
-  }
-  return out;
-}
-
-function isPreservedHeaderValue(value: string): boolean {
-  return (
-    value === REDACTED_HEADER ||
-    value === "[REDACTED]" ||
-    value.startsWith("secret_ref:")
-  );
-}
-
-function prepareHeadersForSave(
-  edited: Record<string, string>,
-  baseline: Record<string, string>,
-): Record<string, string | typeof WRITE_ONLY_HEADER> {
-  const out: Record<string, string | typeof WRITE_ONLY_HEADER> = {};
-  for (const [key, val] of Object.entries(edited)) {
-    const prior = baseline[key];
-    const priorWasSecret =
-      prior !== undefined &&
-      (isPreservedHeaderValue(prior) || prior.startsWith("secret_ref:"));
-    if (isPreservedHeaderValue(val) && priorWasSecret) {
-      out[key] = WRITE_ONLY_HEADER;
-    } else if (prior !== undefined && val === prior && prior.startsWith("secret_ref:")) {
-      out[key] = WRITE_ONLY_HEADER;
-    } else {
-      out[key] = val;
-    }
-  }
-  return out;
-}
-
 export default function Upstreams() {
   const [list, setList] = useState<UpstreamRecord[]>([]);
   const [source, setSource] = useState<string>("");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [form, setForm] = useState<UpstreamRecord>(emptyUpstream());
+  const [headersText, setHeadersText] = useState("");
   const [isNew, setIsNew] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [testResult, setTestResult] = useState<TestConnectionResult | null>(null);
@@ -120,6 +73,7 @@ export default function Upstreams() {
     try {
       const res = await api.getUpstream(id);
       setForm(res.upstream);
+      setHeadersText(headersToText(res.upstream.headers));
       setBaselineHeaders({ ...(res.upstream.headers ?? {}) });
     } catch (e) {
       setError(e instanceof ApiError ? e.message : e instanceof Error ? e.message : "Load failed");
@@ -130,14 +84,28 @@ export default function Upstreams() {
     setIsNew(true);
     setSelectedId(null);
     setForm(emptyUpstream());
+    setHeadersText("");
     setBaselineHeaders({});
     setTestResult(null);
     setRefreshMsg(null);
   };
 
+  const parseHeadersForSubmit = (): Record<string, string> | null => {
+    const { headers, errors } = validateHeadersText(headersText);
+    if (errors.length > 0) {
+      setError(errors.join("; "));
+      return null;
+    }
+    return headers;
+  };
+
   const save = async () => {
     if (!form.id.trim()) {
       setError("Upstream id is required");
+      return;
+    }
+    const parsedHeaders = parseHeadersForSubmit();
+    if (parsedHeaders === null) {
       return;
     }
     setBusy(true);
@@ -146,10 +114,10 @@ export default function Upstreams() {
       const payload = {
         ...form,
         id: form.id.trim(),
-        headers: prepareHeadersForSave(
-          form.headers ?? {},
-          baselineHeaders,
-        ) as unknown as Record<string, string>,
+        headers: prepareHeadersForSave(parsedHeaders, baselineHeaders) as unknown as Record<
+          string,
+          string
+        >,
       };
       if (isNew) {
         await api.createUpstream(payload);
@@ -161,6 +129,7 @@ export default function Upstreams() {
       setSelectedId(payload.id);
       const refreshed = await api.getUpstream(payload.id);
       setForm(refreshed.upstream);
+      setHeadersText(headersToText(refreshed.upstream.headers));
       setBaselineHeaders({ ...(refreshed.upstream.headers ?? {}) });
     } catch (e) {
       setError(e instanceof ApiError ? e.message : e instanceof Error ? e.message : "Save failed");
@@ -178,6 +147,7 @@ export default function Upstreams() {
       await api.deleteUpstream(selectedId);
       setSelectedId(null);
       setForm(emptyUpstream());
+      setHeadersText("");
       await loadList();
     } catch (e) {
       setError(e instanceof ApiError ? e.message : e instanceof Error ? e.message : "Delete failed");
@@ -192,12 +162,16 @@ export default function Upstreams() {
       setError("Set an upstream id before testing");
       return;
     }
+    const parsedHeaders = parseHeadersForSubmit();
+    if (parsedHeaders === null) {
+      return;
+    }
     setBusy(true);
     setError(null);
     setTestResult(null);
     setRefreshMsg(null);
     try {
-      const res = await api.testUpstreamConnection(id, form);
+      const res = await api.testUpstreamConnection(id, { ...form, headers: parsedHeaders });
       setTestResult(res);
     } catch (e) {
       setError(e instanceof ApiError ? e.message : e instanceof Error ? e.message : "Test failed");
@@ -356,11 +330,11 @@ export default function Upstreams() {
                     Headers (one per line, values shown redacted from server)
                     <textarea
                       rows={4}
-                      value={headersToText(form.headers)}
-                      onChange={(e) => patch({ headers: textToHeaders(e.target.value) })}
+                      value={headersText}
+                      onChange={(e) => setHeadersText(e.target.value)}
                       placeholder="Authorization: secret_ref:..."
                     />
-                    {Object.values(form.headers ?? {}).some(isPreservedHeaderValue) ? (
+                    {Object.values(baselineHeaders).some(isPreservedHeaderValue) ? (
                       <span className="hint-text">
                         Contains write-only / redacted values — leave unchanged or set a new
                         secret_ref on save.
