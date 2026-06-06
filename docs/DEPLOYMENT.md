@@ -221,13 +221,24 @@ process environment at startup. `load_config()` then expands `${VAR}` /
 silently fall back to a literal placeholder.
 
 If a `${VAR}` (no default) is set to the *empty string* (e.g. you copied
-`.env.example` to `.env` and forgot to fill in `BM_LIVE_TOKEN=`), the
-gateway logs a **WARNING** at startup naming the variable and continues
-with the empty value. This catches the most common `.env` footgun without
-breaking the legitimate case of `${VAR:-}` (explicit empty default),
-which never warns. A future major version will promote this warning to
-a hard error; see `expand_env()` in `src/concierge/config.py` for the
-`TODO(vNEXT)` marker and migration notes.
+`.env.example` to `.env` and forgot to fill in `BM_LIVE_TOKEN=`), startup
+**fails** with an error naming every offending variable. Use `${VAR:-}`
+for an intentional empty substitution (example configs use this for
+optional upstream credentials you have not filled in yet).
+
+#### Upgrade note (breaking change)
+
+Previous releases logged a **WARNING** and continued with the empty value.
+That warning is now a hard startup error. Migration:
+
+| Before (`.env`)              | After (pick one)                                      |
+| ---------------------------- | ----------------------------------------------------- |
+| `BM_LIVE_TOKEN=` (blank)     | Set a real token: `BM_LIVE_TOKEN=your-token-here`     |
+| Intentionally empty in YAML  | Change `${BM_LIVE_TOKEN}` → `${BM_LIVE_TOKEN:-}`      |
+
+No `CONCIERGE_ALLOW_EMPTY_ENV` escape hatch is provided — the `${VAR:-}`
+form is the supported migration path for operators who legitimately want
+an empty value.
 
 ```bash
 cp .env.example .env            # gitignored
