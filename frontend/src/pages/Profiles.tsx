@@ -30,8 +30,7 @@ function emptySelector(): ProfileSelector {
 function csvToList(text: string): string[] {
   return text
     .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean);
+    .map((s) => s.trim());
 }
 
 export default function Profiles() {
@@ -87,10 +86,16 @@ export default function Profiles() {
     setBusy(true);
     setError(null);
     try {
+      const cleanSelectors = (form.selectors ?? []).map((sel) => ({
+        ...sel,
+        tags: (sel.tags ?? []).filter(Boolean),
+        categories: (sel.categories ?? []).filter(Boolean),
+        names: (sel.names ?? []).filter(Boolean),
+      }));
       const payload: ProfileRecord = {
         ...form,
         name: form.name.trim(),
-        selectors: form.selectors ?? [],
+        selectors: cleanSelectors,
       };
       if (isNew) {
         await api.createProfile(payload);
@@ -154,7 +159,16 @@ export default function Profiles() {
     setError(null);
     setPreview(null);
     try {
-      const res = await api.previewProfile(name, form);
+      const cleanSelectors = (form.selectors ?? []).map((sel) => ({
+        ...sel,
+        tags: (sel.tags ?? []).filter(Boolean),
+        categories: (sel.categories ?? []).filter(Boolean),
+        names: (sel.names ?? []).filter(Boolean),
+      }));
+      const res = await api.previewProfile(name, {
+        ...form,
+        selectors: cleanSelectors,
+      });
       setPreview(res);
     } catch (e) {
       setError(e instanceof ApiError ? e.message : e instanceof Error ? e.message : "Preview failed");

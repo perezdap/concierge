@@ -114,6 +114,7 @@ export default function Upstreams() {
       const payload = {
         ...form,
         id: form.id.trim(),
+        default_tags: (form.default_tags ?? []).filter(Boolean),
         headers: prepareHeadersForSave(parsedHeaders, baselineHeaders) as unknown as Record<
           string,
           string
@@ -171,7 +172,11 @@ export default function Upstreams() {
     setTestResult(null);
     setRefreshMsg(null);
     try {
-      const res = await api.testUpstreamConnection(id, { ...form, headers: parsedHeaders });
+      const res = await api.testUpstreamConnection(id, {
+        ...form,
+        default_tags: (form.default_tags ?? []).filter(Boolean),
+        headers: parsedHeaders,
+      });
       setTestResult(res);
     } catch (e) {
       setError(e instanceof ApiError ? e.message : e instanceof Error ? e.message : "Test failed");
@@ -351,8 +356,7 @@ export default function Upstreams() {
                       patch({
                         default_tags: e.target.value
                           .split(",")
-                          .map((s) => s.trim())
-                          .filter(Boolean),
+                          .map((s) => s.trim()),
                       })
                     }
                   />
