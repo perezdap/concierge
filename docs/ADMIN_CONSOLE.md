@@ -1,5 +1,8 @@
 # Admin Console
 
+> Quick start: see [README.md](../README.md#admin-console) for the shortest path
+> to running the admin UI locally or in Docker.
+
 Browser UI for operating a Concierge gateway: health, upstream status, catalog
 counts, sessions, and runtime config version. Served under `/admin/` as a
 Vite-built React SPA.

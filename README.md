@@ -27,8 +27,8 @@ runtime via `notifications/tools/list_changed`.
 - Policy engine (rate limit + approval gating + risk-level enforcement).
 - Audit logger with secret redaction.
 - Pluggable auth (`localhost` / `bearer` / `none`; OIDC/mTLS in roadmap).
-- Admin endpoints (`/admin/health`, `/admin/catalog`, `/admin/sessions`,
-  `/admin/refresh/{server}`).
+- Admin console — browser UI at `/admin/` plus JSON endpoints (`/admin/health`,
+  `/admin/catalog`, `/admin/sessions`, `/admin/refresh/{server}`).
 - Tests covering catalog, publishing, sanitization, and gateway primitives.
 - Working end-to-end client demo (`examples/session_flow.py`).
 
@@ -52,6 +52,8 @@ curl http://localhost:8765/readyz
 ```
 
 Point any MCP client at `http://localhost:8765/mcp`.
+
+Concierge also ships a browser admin UI — see [Admin Console](#admin-console) below.
 
 > **Tip**: Use `config/minimal.yaml` for the simplest possible setup (only the echo server, no environment variables required).
 
@@ -137,6 +139,54 @@ The Compose file runs Concierge on `http://127.0.0.1:8765/mcp` and checks
 See [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) for the full
 "Twelve-Factor compose" walkthrough (override patterns, where each value
 comes from, why a bind mount instead of `image: build`).
+
+## Admin Console
+
+Browser UI for operating the gateway: health, upstreams, catalog counts,
+sessions, runtime config. Served at `/admin/` as a Vite-built React SPA.
+
+### Local development
+
+Run the gateway and the Vite dev server in two terminals. With
+`auth.type: localhost` (as in `config/minimal.yaml`), loopback access needs
+no bearer token.
+
+**Terminal 1 — gateway:**
+
+```powershell
+.\.venv\Scripts\concierge.exe --config config\minimal.yaml
+```
+
+**Terminal 2 — admin UI (proxies API calls to `:8765`):**
+
+```powershell
+cd frontend
+npm install
+npm run dev
+```
+
+Open `http://localhost:5173/admin/`.
+
+### Production / Docker
+
+Build the static bundle, start the stack, then open the UI on the gateway port:
+
+```bash
+python scripts/build_frontend.py --install
+docker compose up --build
+```
+
+Then open `http://localhost:8765/admin/`. The gateway auto-mounts
+`frontend/dist/index.html` when present (see `resolve_admin_ui_dist()` in
+`src/concierge/server/admin_static.py`).
+
+### Remote access
+
+For non-loopback hosts, set `auth.type: bearer` in config and provide
+`${GATEWAY_TOKEN}` in `.env`. The admin UI prompts once per browser session;
+the token is stored in `sessionStorage` and sent on subsequent API requests.
+
+Full reference: [`docs/ADMIN_CONSOLE.md`](docs/ADMIN_CONSOLE.md).
 
 ## Demo (no client required)
 
