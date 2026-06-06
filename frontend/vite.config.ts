@@ -1,3 +1,4 @@
+/// <reference types="vitest/config" />
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 
@@ -14,6 +15,11 @@ function apiProxyBypass(req: { url?: string; headers?: { accept?: string } }) {
 
 export default defineConfig({
   plugins: [react()],
+  test: {
+    environment: "jsdom",
+    globals: false,
+    setupFiles: "./src/testSetup.ts",
+  },
   base: "/admin/",
   build: {
     outDir: "dist",
