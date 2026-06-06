@@ -182,3 +182,83 @@ async def test_sqlite_persistence_across_instances() -> None:
         s2.close()
     finally:
         Path(path).unlink(missing_ok=True)
+
+
+# ---------------------------------------------------------------------------
+# Startup-restore: get_active_config_sync + overlay_dynamic_from_store
+# ---------------------------------------------------------------------------
+
+def test_get_active_config_sync_empty(store: SqliteConfigStore) -> None:
+    assert store.get_active_config_sync() is None
+
+
+@pytest.mark.asyncio
+async def test_get_active_config_sync_returns_raw_config(store: SqliteConfigStore) -> None:
+    cfg = _minimal_config_dict()
+    await store.create_or_update_draft(cfg)
+    await store.promote_draft_to_active()
+
+    result = store.get_active_config_sync()
+    assert result is not None
+    assert result.get("upstream_servers") == cfg.get("upstream_servers")
+
+
+@pytest.mark.asyncio
+async def test_get_active_config_sync_includes_secrets(store: SqliteConfigStore) -> None:
+    cfg = _config_with_secrets()
+    await store.create_or_update_draft(cfg)
+    await store.promote_draft_to_active()
+
+    result = store.get_active_config_sync()
+    assert result is not None
+    # Raw config (not redacted) must have the real secret values.
+    tokens = result.get("auth", {}).get("bearer_tokens", [])
+    assert "super-secret-token-12345" in tokens
+    headers = result["upstream_servers"][0].get("headers", {})
+    assert headers.get("Authorization") == "Bearer upstream-secret"
+
+
+def test_overlay_dynamic_from_store_replaces_dynamic_fields() -> None:
+    from concierge.admin.config_store import overlay_dynamic_from_store
+
+    yaml_cfg: dict = {
+        "gateway": {"host": "127.0.0.1", "port": 8765},
+        "auth": {"type": "bearer", "bearer_tokens": ["yaml-token"]},
+        "upstream_servers": [],
+        "profiles": [],
+        "log_level": "INFO",
+    }
+    stored: dict = {
+        "upstream_servers": [{"id": "foo", "transport": "stdio", "command": ["python"]}],
+        "profiles": [{"name": "p1", "selectors": []}],
+        "policy": {"rate_limit_capacity": 99, "rate_limit_refill_per_sec": 2.0},
+    }
+
+    result = overlay_dynamic_from_store(yaml_cfg, stored)
+
+    # Dynamic fields come from the store.
+    assert result["upstream_servers"] == stored["upstream_servers"]
+    assert result["profiles"] == stored["profiles"]
+    assert result["policy"] == stored["policy"]
+
+    # Infra fields stay from the YAML.
+    assert result["gateway"] == yaml_cfg["gateway"]
+    assert result["auth"] == yaml_cfg["auth"]
+    assert result["log_level"] == yaml_cfg["log_level"]
+
+
+def test_overlay_dynamic_from_store_missing_keys_unchanged() -> None:
+    from concierge.admin.config_store import overlay_dynamic_from_store
+
+    yaml_cfg: dict = {
+        "upstream_servers": [{"id": "existing", "transport": "stdio", "command": ["python"]}],
+        "profiles": [],
+    }
+    # Stored config has no upstream_servers or profiles — YAML values survive.
+    stored: dict = {"policy": {"rate_limit_capacity": 10, "rate_limit_refill_per_sec": 1.0}}
+
+    result = overlay_dynamic_from_store(yaml_cfg, stored)
+
+    assert result["upstream_servers"] == yaml_cfg["upstream_servers"]
+    assert result["profiles"] == yaml_cfg["profiles"]
+    assert result["policy"] == stored["policy"]

@@ -636,6 +636,24 @@ def _build_rate_limiter(cfg: GatewayConfig) -> RateLimiter:
 def build_app(config: GatewayConfig) -> FastAPI:
     configure_logging(config.log_level)
 
+    # Startup-restore: open the config store early so dynamic fields (upstreams,
+    # profiles, policy …) applied via the admin panel survive process restarts.
+    # Infra fields (auth, gateway host/port, storage) always come from the YAML.
+    config_store = SqliteConfigStore(_runtime_config_db_path(config.storage))
+    _stored = config_store.get_active_config_sync()
+    if _stored is not None:
+        from ..admin.config_store import overlay_dynamic_from_store
+        _merged = overlay_dynamic_from_store(config.model_dump(mode="json"), _stored)
+        try:
+            config = GatewayConfig.model_validate(_merged)
+            _log.info(
+                "startup-restore: %d upstream(s), %d profile(s) from config store",
+                len(config.upstream_servers),
+                len(config.profiles),
+            )
+        except Exception as _exc:  # noqa: BLE001
+            _log.warning("startup-restore: stored config invalid, falling back to YAML: %s", _exc)
+
     # Core subsystems
     catalog = _build_catalog_store(config.storage)
     bus = NotificationBus()
@@ -735,8 +753,6 @@ def build_app(config: GatewayConfig) -> FastAPI:
     tenant_tokens = _build_tenant_token_store(config)
     auth = _build_auth(config, revocation, tenant_tokens)
     drain = DrainController()
-    config_store = SqliteConfigStore(_runtime_config_db_path(config.storage))
-
     async def _session_gc_loop() -> None:
         interval = config.session_pool.gc_interval_s
         try:

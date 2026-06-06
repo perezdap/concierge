@@ -25,6 +25,35 @@ _STATE_ACTIVE = "active_version_id"
 _STATE_DRAFT = "draft_version_id"
 _STATE_LAST_KNOWN_GOOD = "last_known_good_version_id"
 
+# Fields managed dynamically via the admin panel — persisted in the config store
+# and restored on startup. Everything else (auth, gateway host/port, storage URLs,
+# log level) always comes from the YAML file so deployment-infra changes take effect
+# on restart without needing to clear the store.
+_DYNAMIC_FIELDS: frozenset[str] = frozenset({
+    "upstream_servers",
+    "profiles",
+    "policy",
+    "payload",
+    "session_pool",
+    "catalog_refresh_interval_s",
+})
+
+
+def overlay_dynamic_from_store(
+    yaml_config: dict[str, Any],
+    stored_config: dict[str, Any],
+) -> dict[str, Any]:
+    """Return a new config dict using YAML as the base, with dynamic fields from the store.
+
+    Called at startup to restore admin-panel changes (upstreams, profiles, policy …)
+    while keeping deployment-infra settings (auth, gateway, storage) from the YAML.
+    """
+    result = dict(yaml_config)
+    for key in _DYNAMIC_FIELDS:
+        if key in stored_config:
+            result[key] = stored_config[key]
+    return result
+
 _SQLITE_SCHEMA = """
 CREATE TABLE IF NOT EXISTS config_versions (
     id               TEXT PRIMARY KEY,
@@ -357,6 +386,17 @@ class SqliteConfigStore(ConfigStore):
         if active is None:
             return None
         return config_to_redacted_yaml(active.config)
+
+    def get_active_config_sync(self) -> dict[str, Any] | None:
+        """Return the active config dict synchronously — for use during startup."""
+        active_id = self._get_state_sync(_STATE_ACTIVE)
+        if not active_id:
+            return None
+        row = self._conn.execute(
+            "SELECT config_json FROM config_versions WHERE id = ?",
+            (active_id,),
+        ).fetchone()
+        return json.loads(row[0]) if row else None
 
     def close(self) -> None:
         self._conn.close()
