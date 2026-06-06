@@ -181,8 +181,10 @@ docker compose up --build
 
 This starts the gateway with the committed `config/gateway.example.yaml`,
 exposes **8765**, and reads any non-secret env vars you set in your shell.
-The example config uses `${VAR}` placeholders for upstream tokens; if you
-leave those unset, only the local `echo` stdio upstream runs.
+The example config uses `${VAR:-}` for upstream credential placeholders so
+a fresh clone boots without a populated `.env`; remote upstreams get empty
+auth headers until you fill in `.env`. Use bare `${VAR}` (no default) in
+your own configs when a secret must be present at startup.
 
 ### Customizing the config (no image rebuild)
 

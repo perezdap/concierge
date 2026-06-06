@@ -202,20 +202,45 @@ def test_env_file_blocked_in_dockerignore():
 # ---------------------------------------------------------------------------
 
 
-def test_example_config_loads_with_dummy_env(monkeypatch):
-    """The example YAML references ${NOTES_TOKEN} and ${JIRA_TOKEN}. The
-    `${VAR}` strict-expansion in load_config() would normally refuse to
-    start without those, but the example uses no-default ${VAR}. Setting
-    a dummy value proves the env-templating + load_config path still
-    works end-to-end after our compose change."""
-    monkeypatch.setenv("NOTES_TOKEN", "dummy")
-    monkeypatch.setenv("JIRA_TOKEN", "dummy")
-    # Re-import so module-level env caches don't pin stale values.
+def test_example_config_loads_without_env_vars(monkeypatch):
+    """Fresh-clone first run: gateway.example.yaml must load with no .env.
+
+    Upstream credential placeholders use ${VAR:-} so unset tokens do not
+    trip expand_env's strict no-default error."""
+    monkeypatch.delenv("NOTES_TOKEN", raising=False)
+    monkeypatch.delenv("JIRA_TOKEN", raising=False)
     from concierge.config import load_config  # type: ignore
+
     cfg = load_config(EXAMPLE_CONFIG)
     assert cfg.gateway.port == 8765
-    # And the templated header actually got the dummy value (not a literal
-    # "${NOTES_TOKEN}" or empty string).
+
+    notes = next(s for s in cfg.upstream_servers if s.id == "notes")
+    jira = next(s for s in cfg.upstream_servers if s.id == "legacy-jira")
+    assert notes.headers.get("Authorization") == "Bearer "
+    assert jira.headers.get("Authorization") == "Bearer "
+
+
+def test_example_config_loads_with_dummy_env(monkeypatch):
+    """Populated .env: upstream tokens substitute into Authorization headers."""
+    monkeypatch.setenv("NOTES_TOKEN", "dummy")
+    monkeypatch.setenv("JIRA_TOKEN", "dummy")
+    from concierge.config import load_config  # type: ignore
+
+    cfg = load_config(EXAMPLE_CONFIG)
+    assert cfg.gateway.port == 8765
     notes_server = next(s for s in cfg.upstream_servers if s.id == "notes")
     auth = notes_server.headers.get("Authorization", "")
     assert "dummy" in auth, f"NOTES_TOKEN env-templating broke; got header: {auth!r}"
+
+
+def test_example_config_credential_placeholders_use_explicit_empty_default():
+    """Regression: bare ${VAR} for upstream credentials breaks first-run Docker."""
+    text = EXAMPLE_CONFIG.read_text(encoding="utf-8")
+    bare_credential_refs = re.findall(
+        r"\$\{((?:NOTES|JIRA|BM_LIVE|GATEWAY)_TOKEN)\}",
+        text,
+    )
+    assert bare_credential_refs == [], (
+        "Upstream credential placeholders must use ${VAR:-} so docker compose "
+        f"starts without a populated .env. Found bare refs: {bare_credential_refs}"
+    )
