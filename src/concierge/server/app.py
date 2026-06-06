@@ -13,7 +13,8 @@ from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
 from typing import Any
 
-from fastapi import APIRouter, FastAPI
+from fastapi import APIRouter, FastAPI, Request
+from fastapi.responses import JSONResponse
 
 from ..adapters.base import UpstreamAdapter
 from ..adapters.caching import CachingAdapter
@@ -40,6 +41,7 @@ from ..core.notifications import NotificationBus
 from ..core.publishing import PublishingService
 from ..core.session import RedisSessionManager, SessionManager
 from ..core.types import PrimitiveType
+from ..errors import GatewayError, Unauthorized
 from ..gateway.profiles import Profile, ProfileRegistry, ProfileSelector
 from ..gateway.service import GatewayService
 from ..observability import (
@@ -107,6 +109,26 @@ from .tenant_tokens import (
 )
 
 _log = get_logger("concierge.app")
+
+# Gateway-specific JSON-RPC code → HTTP status mapping (errors.py).
+# Codes outside this map fall back to 500 (logged as a server error).
+_HTTP_STATUS_FOR_GATEWAY_CODE: dict[int, int] = {
+    -32001: 401,  # GW_UNAUTHORIZED
+    -32002: 403,  # GW_FORBIDDEN
+    -32003: 429,  # GW_RATE_LIMITED
+    -32004: 403,  # GW_APPROVAL_REQUIRED
+    -32005: 404,  # GW_NOT_PUBLISHED
+    -32006: 404,  # GW_UNKNOWN_PRIMITIVE
+    -32010: 502,  # GW_UPSTREAM_UNAVAILABLE
+    -32011: 504,  # GW_UPSTREAM_TIMEOUT
+    -32012: 503,  # GW_UPSTREAM_CIRCUIT_OPEN
+    -32013: 502,  # GW_UPSTREAM_PROTOCOL
+    -32020: 502,  # GW_SANITIZATION_FAILED (treat as bad gateway)
+    -32602: 400,  # JSONRPC_INVALID_PARAMS
+    -32601: 404,  # JSONRPC_METHOD_NOT_FOUND
+    -32600: 400,  # JSONRPC_INVALID_REQUEST
+    -32700: 400,  # JSONRPC_PARSE_ERROR
+}
 
 
 def _build_adapter(cfg: UpstreamServerConfig) -> UpstreamAdapter:
@@ -845,6 +867,41 @@ def build_app(config: GatewayConfig) -> FastAPI:
     @app.middleware("http")
     async def _record_metrics(request, call_next):  # type: ignore[no-untyped-def]
         return await record_request_metrics(request, call_next, metrics)
+
+    # Map GatewayError subclasses to clean JSON-RPC-shaped responses with the
+    # correct HTTP status, instead of bubbling them up as unhandled exceptions
+    # (which uvicorn logs as a multi-line traceback per request — noise on every
+    # unauthenticated browser probe like /favicon.ico).
+    @app.exception_handler(GatewayError)
+    async def _gateway_error_handler(request: Request, exc: GatewayError):  # type: ignore[no-untyped-def]
+        # Unauthorized is expected (no/invalid credential), not a server error.
+        log = _log.info if isinstance(exc, Unauthorized) else _log.warning
+        log(
+            "gateway error on %s %s: code=%d message=%s",
+            request.method, request.url.path, exc.code, exc.message,
+        )
+        return JSONResponse(
+            status_code=_HTTP_STATUS_FOR_GATEWAY_CODE.get(exc.code, 500),
+            content={"error": exc.to_jsonrpc()},
+        )
+
+    @app.exception_handler(Unauthorized)
+    async def _unauthorized_handler(request: Request, exc: Unauthorized):  # type: ignore[no-untyped-def]
+        # Auth failures are routine (missing/expired tokens, browser probes) and
+        # should never emit a stack trace. Log a single line; return a clean
+        # 401 with a WWW-Authenticate hint.
+        _log.info(
+            "unauthorized on %s %s from %s: %s",
+            request.method,
+            request.url.path,
+            request.client.host if request.client else "?",
+            exc.message,
+        )
+        return JSONResponse(
+            status_code=401,
+            content={"error": exc.to_jsonrpc()},
+            headers={"WWW-Authenticate": "Bearer"},
+        )
 
     # Enforce the Origin allow-list globally, ahead of every route handler, so no
     # MCP route (POST/GET/DELETE) can be reached with an untrusted browser Origin
