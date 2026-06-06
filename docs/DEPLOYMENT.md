@@ -220,6 +220,15 @@ process environment at startup. `load_config()` then expands `${VAR}` /
 `${VAR}` with no default that is unset is a startup error** — secrets cannot
 silently fall back to a literal placeholder.
 
+If a `${VAR}` (no default) is set to the *empty string* (e.g. you copied
+`.env.example` to `.env` and forgot to fill in `BM_LIVE_TOKEN=`), the
+gateway logs a **WARNING** at startup naming the variable and continues
+with the empty value. This catches the most common `.env` footgun without
+breaking the legitimate case of `${VAR:-}` (explicit empty default),
+which never warns. A future major version will promote this warning to
+a hard error; see `expand_env()` in `src/concierge/config.py` for the
+`TODO(vNEXT)` marker and migration notes.
+
 ```bash
 cp .env.example .env            # gitignored
 $EDITOR .env                    # fill in BM_LIVE_TOKEN, NOTES_TOKEN, etc.

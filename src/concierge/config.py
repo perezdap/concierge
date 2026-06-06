@@ -5,6 +5,7 @@ Single YAML file. Pydantic models validate it and surface clear errors.
 """
 from __future__ import annotations
 
+import logging
 import os
 import re
 from pathlib import Path
@@ -14,6 +15,8 @@ import yaml
 from pydantic import BaseModel, Field
 
 from .core.types import RiskLevel
+
+_log = logging.getLogger("concierge.config")
 
 
 class GatewayHttpConfig(BaseModel):
@@ -364,13 +367,27 @@ def expand_env(text: str) -> str:
     ``# set ${BM_LIVE_TOKEN} in .env`` without breaking startup. References
     that genuinely appear in YAML values (outside any comment, and not
     inside quoted scalars that contain a ``#``) still raise as before.
+
+    A ${VAR} (no default) that is set to the empty string emits a
+    WARNING-level log entry naming the variable. This catches the common
+    "operator copied .env.example and forgot to fill in BM_LIVE_TOKEN" footgun
+    without breaking the legitimate use case of an explicit empty
+    ``${VAR:-}`` default.
     """
     missing: list[str] = []
+    # Track set-but-empty (no-default) variables seen across this call so we
+    # log a single warning per variable, not one per occurrence.
+    empty_no_default: set[str] = set()
 
     def _sub(m: re.Match[str]) -> str:
         name, default = m.group(1), m.group(2)
         value = os.environ.get(name)
         if value is not None:
+            if value == "" and default is None:
+                # Bare ${VAR} (no default) that is set to "" is a likely
+                # misconfiguration (forgot-to-fill-in-the-secret), not an
+                # intentional empty substitution. Warn loudly.
+                empty_no_default.add(name)
             return value
         if default is not None:
             return default
@@ -396,6 +413,19 @@ def expand_env(text: str) -> str:
         else:
             out_lines.append(_ENV_VAR_RE.sub(_sub, body[:cut]) + body[cut:] + nl)
 
+    if empty_no_default:
+        for name in sorted(empty_no_default):
+            # Distinct from the "undefined" error path: set-but-empty is a
+            # likely-misconfigured-secret, not a missing env var. Operators
+            # get a WARNING they can grep for, not a crash.
+            _log.warning(
+                "config references %s which is set to the empty string in the "
+                "environment; substituting \"\" — if this is a secret (e.g. "
+                "BM_LIVE_TOKEN) you almost certainly forgot to fill in the "
+                "value in .env. Use ${%s:-} for an intentional empty value.",
+                name,
+                name,
+            )
     if missing:
         names = ", ".join(sorted(set(missing)))
         raise ValueError(
@@ -403,6 +433,12 @@ def expand_env(text: str) -> str:
             f"Set them, or supply a default with ${{VAR:-default}}."
         )
     return "".join(out_lines)
+
+
+# TODO(vNEXT): promote the empty-but-set warning above to a hard ValueError
+# after operators have had a release cycle to migrate `${VAR}` →
+# `${VAR:-}` where they genuinely want the empty value. The plan/issue
+# tracker should record the migration deadline so it isn't lost.
 
 
 def load_config(path: str | Path) -> GatewayConfig:
