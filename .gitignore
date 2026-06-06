@@ -51,3 +51,12 @@ mcps/
 concierge-runtime-config.db*
 /NUL
 !.env.example
+
+# local MCP helper scratch (BridgeMind board access)
+.mcp.json
+.mcp_sid
+.mcp_h
+.mcp_body
+.mcp_resp*
+.mcp_args
+.mcpcall.sh
