@@ -123,9 +123,7 @@ can spin up, reconfigure, and roll the gateway **without rebuilding the image
 or editing the compose file**. Secrets stay in `.env` (gitignored), config
 lives in `config/`, and the compose file just wires the two together.
 
-**Out of the box** — uses the committed `config/gateway.example.yaml` (echo
-upstream runs immediately; remote upstream tokens default to empty via
-`${VAR:-}` until you add them to `.env`):
+**Out of the box** — uses `config/minimal.yaml` (localhost auth, no env vars required):
 
 ```bash
 docker compose up --build
@@ -140,15 +138,12 @@ docker compose up --force-recreate
 
 The compose file bind-mounts `./config:/app/config:ro`, so any edit to a file
 in `config/` is picked up on the next `docker compose up --force-recreate` —
-no image rebuild. To use a separate, gitignored `config/gateway.yaml` of your
-own, copy the example and add a `docker-compose.override.yml` that overrides
-the `command:` to point at it.
+no image rebuild. To use a different config, drop a `docker-compose.override.yml`
+that overrides `command:` to point at it (e.g. `config/gateway.example.yaml` for
+the full bearer-token + example upstreams config).
 
 The Compose file runs Concierge on `http://127.0.0.1:8765/mcp` and checks
 `/healthz` for container health.
-
-> **Tip**: For the simplest possible setup (echo server only, no env vars),
-> pass `--config /app/config/minimal.yaml` in a `docker-compose.override.yml`.
 
 See [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) for the full
 "Twelve-Factor compose" walkthrough (override patterns, where each value
@@ -159,16 +154,64 @@ comes from, why a bind mount instead of `image: build`).
 Browser UI for operating the gateway: health, upstreams, catalog counts,
 sessions, runtime config. Served at `/admin/` as a Vite-built React SPA.
 
-### Local development
+### Zero-friction local start (admin-panel-first)
+
+The recommended way to get started locally — boot with no upstreams, add
+everything through the UI:
+
+```powershell
+# 1. Generate GATEWAY_TOKEN in .env (idempotent — safe to re-run)
+python -m concierge init
+
+# 2. Start the gateway (localhost auth, no token needed)
+.\.venv\Scripts\concierge.exe --config config\starter.yaml
+
+# 3. Open the admin panel
+#    http://localhost:8765/admin
+```
+
+Add upstreams and profiles in the UI. Click **Apply** to reload the gateway
+live without restarting. Changes persist across process restarts — see
+[Persistence](#persistence) below.
+
+When you're ready to expose the gateway beyond localhost, switch to bearer auth
+in `starter.yaml`:
+
+```yaml
+auth:
+  type: bearer
+  bearer_tokens: ["${GATEWAY_TOKEN}"]
+```
+
+The admin UI detects the 401 and prompts for the token once per browser session.
+
+### Persistence
+
+Admin-panel changes are stored in `concierge-runtime-config.db` (SQLite, same
+directory as the process). On the next restart, the gateway restores the
+following fields from that store:
+
+| Restored from store | Always read from YAML |
+|---|---|
+| `upstream_servers` | `auth` |
+| `profiles` | `gateway` (host/port/origins) |
+| `policy` | `storage` |
+| `payload` | `log_level` |
+| `session_pool` | `cache`, `output`, `observability` |
+
+This means you can freely edit auth and gateway settings in the YAML and
+restart without losing your upstreams and profiles.
+
+### Local development (Vite dev server)
 
 Run the gateway and the Vite dev server in two terminals. With
-`auth.type: localhost` (as in `config/minimal.yaml`), loopback access needs
-no bearer token.
+`auth.type: localhost` (as in `config/minimal.yaml` or `config/starter.yaml`),
+loopback access needs no bearer token.
 
 **Terminal 1 — gateway:**
 
 ```powershell
-.\.venv\Scripts\concierge.exe --config config\minimal.yaml
+.\.venv\Scripts\concierge.exe --config config\starter.yaml
 ```
 
 **Terminal 2 — admin UI (proxies API calls to `:8765`):**
@@ -197,8 +240,9 @@ Then open `http://localhost:8765/admin/`. The gateway auto-mounts
 ### Remote access
 
 For non-loopback hosts, set `auth.type: bearer` in config and provide
-`${GATEWAY_TOKEN}` in `.env`. The admin UI prompts once per browser session;
-the token is stored in `sessionStorage` and sent on subsequent API requests.
+`${GATEWAY_TOKEN}` in `.env`. The admin UI detects a 401 response and
+automatically prompts for the token once per browser session; the token is
+stored in `sessionStorage` and sent on subsequent API requests.
 
 Full reference: [`docs/ADMIN_CONSOLE.md`](docs/ADMIN_CONSOLE.md).
 

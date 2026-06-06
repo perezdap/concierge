@@ -204,7 +204,47 @@ A profile flagged `auto_apply: true` is published at session init
 `notifications/tools/list_changed` — they get a usable tool surface without
 needing to react to the dynamic-publish notification.
 
-## 14. Metrics / audit hooks
+## 14. Runtime config persistence (startup-restore)
+
+Admin-panel changes (upstreams, profiles, policy, payload settings) are stored
+in a SQLite file (`concierge-runtime-config.db` by default, or
+`storage.catalog_sqlite_path` when set). On restart, `build_app()` opens the
+store before registering any adapters and calls `overlay_dynamic_from_store()`:
+
+```
+stored_config  ──(dynamic fields only)──▶ │
+yaml_config    ──(infra fields only)────▶ │ merged GatewayConfig ──▶ build_app()
+```
+
+**Dynamic fields** — taken from the store when a prior active version exists:
+
+| Field | Why dynamic |
+|---|---|
+| `upstream_servers` | added/edited via admin panel |
+| `profiles` | added/edited via admin panel |
+| `policy` | tunable at runtime |
+| `payload` | tunable at runtime |
+| `session_pool` | tunable at runtime |
+| `catalog_refresh_interval_s` | tunable at runtime |
+
+**Infra fields** — always from the YAML file:
+
+| Field | Why from YAML |
+|---|---|
+| `auth` | token rotation, OIDC issuer |
+| `gateway` | host/port/origins |
+| `storage` | backend URLs |
+| `log_level` | operational |
+| `cache`, `output`, `observability` | deployment concerns |
+
+This split means you can rotate tokens or change the bind address in the YAML
+and restart without losing admin-panel upstreams or profiles.
+
+If the stored config fails Pydantic validation on startup (e.g. after a schema
+change), the gateway logs a warning and falls back to the YAML config only —
+it never refuses to start because of a stale store entry.
+
+## 15. Metrics / audit hooks
 
 The audit stream (`util/audit.py`) carries operator-facing metrics without a new
 dependency: `tool.call` records `latency_ms` plus `request_bytes`/`response_bytes`;

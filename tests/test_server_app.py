@@ -217,3 +217,46 @@ def test_default_binding_is_loopback_only() -> None:
     cfg = GatewayHttpConfig()
     assert cfg.host == "127.0.0.1"
     assert cfg.bind_public is False
+
+
+# ---------------------------------------------------------------------------
+# Startup-restore: build_app picks up dynamic fields from a pre-populated store
+# ---------------------------------------------------------------------------
+
+def test_build_app_restores_upstreams_from_config_store(tmp_path) -> None:
+    """Upstreams applied via the admin panel survive a process restart."""
+    import asyncio
+
+    from concierge.admin.config_store import SqliteConfigStore
+    from concierge.config import GatewayConfig, StorageConfig
+    from concierge.server.app import build_app
+
+    db_path = str(tmp_path / "runtime.db")
+
+    # Simulate a previous run: write an active config with one upstream.
+    base_cfg = GatewayConfig(storage=StorageConfig(catalog_sqlite_path=db_path))
+    upstream = {
+        "id": "persisted-echo",
+        "transport": "stdio",
+        "command": ["python", "examples/upstream_echo_server.py"],
+    }
+    stored = base_cfg.model_dump(mode="json")
+    stored["upstream_servers"] = [upstream]
+
+    store = SqliteConfigStore(db_path)
+
+    async def _seed() -> None:
+        await store.create_or_update_draft(stored)
+        await store.promote_draft_to_active()
+
+    asyncio.run(_seed())
+    store.close()
+
+    # Boot a fresh app pointing at the same DB with no upstreams in the YAML.
+    boot_cfg = GatewayConfig(storage=StorageConfig(catalog_sqlite_path=db_path))
+    assert boot_cfg.upstream_servers == []
+
+    app = build_app(boot_cfg)
+    adapters = app.state.adapters
+    registered_ids = [a.server_id for a in adapters.all()]
+    assert "persisted-echo" in registered_ids
