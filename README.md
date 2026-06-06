@@ -44,6 +44,8 @@ cd concierge
 docker compose up --build
 ```
 
+The example config works out of the box; fill in `.env` when you're ready to point at real upstreams.
+
 In another terminal, verify it's running:
 
 ```bash
@@ -107,8 +109,9 @@ can spin up, reconfigure, and roll the gateway **without rebuilding the image
 or editing the compose file**. Secrets stay in `.env` (gitignored), config
 lives in `config/`, and the compose file just wires the two together.
 
-**Out of the box** — uses the committed `config/gateway.example.yaml` (the
-local `echo` stdio upstream only, no tokens needed):
+**Out of the box** — uses the committed `config/gateway.example.yaml` (echo
+upstream runs immediately; remote upstream tokens default to empty via
+`${VAR:-}` until you add them to `.env`):
 
 ```bash
 docker compose up --build

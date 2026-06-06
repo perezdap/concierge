@@ -3,14 +3,13 @@
 # Run locally:
 #   python -m concierge --config config/gateway.example.yaml
 # Run with Docker Compose:
-#   cp .env.example .env        # gitignored
-#   $EDITOR .env                # set BM_LIVE_TOKEN, NOTES_TOKEN, etc. (or leave blank)
 #   docker compose up --build
 #
-# Environment-variable placeholders in this file (e.g. the BRIDGEMIND-style
-# Authorization headers below) are expanded by load_config() from the process
-# environment at startup. Anything referenced as a placeholder must be
-# exported — typically via .env (Compose auto-loads it) or your secret manager.
+# Environment-variable placeholders in this file are expanded by load_config()
+# from the process environment at startup.  Secrets are supplied via .env
+# (Compose auto-loads it) or your secret manager.  Upstream credentials that
+# are not needed can be left blank — the ${VAR:-} syntax lets the gateway start
+# cleanly with empty upstream credentials until you fill in .env.
 # See docs/DEPLOYMENT.md ("Twelve-Factor compose") and .env.example.
 
 gateway:
@@ -62,7 +61,7 @@ upstream_servers:
     transport: streamable_http
     url: https://notes.example.internal/mcp
     headers:
-      Authorization: "Bearer ${NOTES_TOKEN}"   # operator substitutes via env-templating
+      Authorization: "Bearer ${NOTES_TOKEN:-}"   # fill NOTES_TOKEN in .env when ready
     default_risk: medium
     default_tags: ["notes"]
     default_categories: ["productivity"]
@@ -79,7 +78,7 @@ upstream_servers:
     transport: sse_legacy
     sse_url: https://jira.example.internal/mcp/sse
     headers:
-      Authorization: "Bearer ${JIRA_TOKEN}"
+      Authorization: "Bearer ${JIRA_TOKEN:-}"   # fill JIRA_TOKEN in .env when ready
     default_risk: high
     default_tags: ["jira"]
     default_categories: ["ticketing"]
