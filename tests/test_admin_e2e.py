@@ -7,11 +7,14 @@ import sys
 import uuid
 from pathlib import Path
 
+import pytest
 from scripts.admin_e2e import (
     DEFAULT_WORK_ROOT,
     run_admin_release_gate,
     run_fake_oauth_idp_smoke,
 )
+
+from concierge.server.admin_static import resolve_admin_ui_dist
 
 
 def _work_dir() -> Path:
@@ -20,6 +23,10 @@ def _work_dir() -> Path:
     return path
 
 
+@pytest.mark.skipif(
+    resolve_admin_ui_dist() is None,
+    reason="Admin UI dist not built — run `cd frontend && npm ci && npm run build`",
+)
 def test_admin_release_gate() -> None:
     result = run_admin_release_gate(_work_dir())
     assert result["spa"]["asset"].startswith("assets/")
@@ -37,6 +44,10 @@ def test_fake_oauth_idp_smoke() -> None:
     assert result == {"oauth_revoke_calls": 1, "connected": False}
 
 
+@pytest.mark.skipif(
+    resolve_admin_ui_dist() is None,
+    reason="Admin UI dist not built — run `cd frontend && npm ci && npm run build`",
+)
 def test_admin_e2e_cli() -> None:
     script = Path("scripts/admin_e2e.py")
     proc = subprocess.run(
