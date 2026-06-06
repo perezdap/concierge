@@ -3,7 +3,7 @@
  * Imported by Dashboard and future pages (Upstreams, Profiles).
  */
 
-import { ensureBearerToken, getAuthHeaders } from "./auth";
+import { ensureBearerToken, getAuthHeaders, getAuthMode, setAuthMode } from "./auth";
 
 const API_BASE = (import.meta.env.VITE_API_BASE as string | undefined) ?? "";
 
@@ -38,6 +38,12 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     }
   }
   if (!res.ok) {
+    if (res.status === 401 && getAuthMode() === "localhost") {
+      setAuthMode("bearer");
+      if (ensureBearerToken()) {
+        return request<T>(path, init);
+      }
+    }
     const detail =
       typeof body === "object" && body !== null && "detail" in body
         ? String((body as { detail: unknown }).detail)
@@ -72,6 +78,12 @@ async function requestAllowStatuses<T>(
     }
   }
   if (!res.ok && !allowedStatuses.includes(res.status)) {
+    if (res.status === 401 && getAuthMode() === "localhost") {
+      setAuthMode("bearer");
+      if (ensureBearerToken()) {
+        return requestAllowStatuses<T>(path, allowedStatuses, init);
+      }
+    }
     const detail =
       typeof body === "object" && body !== null && "detail" in body
         ? String((body as { detail: unknown }).detail)
