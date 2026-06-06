@@ -165,6 +165,103 @@ docker run --rm -p 8765:8765 \
   concierge:0.1.0 --config /app/config/gateway.yaml
 ```
 
+## Twelve-Factor compose (no-duplicate operator workflow)
+
+[Twelve-Factor App](https://12factor.net/config) requires config to live in
+the **environment**, not the codebase. The compose file in this repo follows
+that model so operators can spin up, reconfigure, and roll Concierge without
+editing the compose file, rebuilding the image, or duplicating values across
+files.
+
+The defaults work out of the box:
+
+```bash
+docker compose up --build
+```
+
+This starts the gateway with the committed `config/gateway.example.yaml`,
+exposes **8765**, and reads any non-secret env vars you set in your shell.
+The example config uses `${VAR}` placeholders for upstream tokens; if you
+leave those unset, only the local `echo` stdio upstream runs.
+
+### Customizing the config (no image rebuild)
+
+Edit the YAML directly under `config/` — the compose file bind-mounts
+`./config:/app/config:ro`, so any change there is picked up on the next
+`docker compose up --force-recreate`:
+
+```bash
+$EDITOR config/gateway.example.yaml     # tweak the comprehensive example
+docker compose up --force-recreate      # picks up the change
+```
+
+To use a separate, gitignored config of your own:
+
+```bash
+cp config/gateway.example.yaml config/gateway.yaml   # gitignored
+$EDITOR config/gateway.yaml
+# Override the gateway's --config argument via a Compose override file:
+cat > docker-compose.override.yml <<'YAML'
+services:
+  concierge:
+    command: ["--config", "/app/config/gateway.yaml"]
+YAML
+docker compose up --force-recreate
+```
+
+`config/gateway.yaml` is gitignored (see `.gitignore`) so it never gets
+committed — that's the file that holds your environment-specific config.
+
+### Injecting secrets via `.env` (Twelve-Factor §III)
+
+Compose auto-loads `./.env` (next to `docker-compose.yml`) into the gateway's
+process environment at startup. `load_config()` then expands `${VAR}` /
+`${VAR:-default}` placeholders from that environment into your YAML. **A
+`${VAR}` with no default that is unset is a startup error** — secrets cannot
+silently fall back to a literal placeholder.
+
+If a `${VAR}` (no default) is set to the *empty string* (e.g. you copied
+`.env.example` to `.env` and forgot to fill in `BM_LIVE_TOKEN=`), the
+gateway logs a **WARNING** at startup naming the variable and continues
+with the empty value. This catches the most common `.env` footgun without
+breaking the legitimate case of `${VAR:-}` (explicit empty default),
+which never warns. A future major version will promote this warning to
+a hard error; see `expand_env()` in `src/concierge/config.py` for the
+`TODO(vNEXT)` marker and migration notes.
+
+```bash
+cp .env.example .env            # gitignored
+$EDITOR .env                    # fill in BM_LIVE_TOKEN, NOTES_TOKEN, etc.
+docker compose up --force-recreate
+```
+
+`.env.example` (committed) is the template; `.env` (gitignored) is your
+local, populated copy. Never commit a populated `.env`.
+
+For Kubernetes, see *Secret handling* above — the same `${VAR}` mechanism
+maps onto Secret-backed env vars via the deployment manifest.
+
+### Where each value comes from
+
+| Source          | Examples                              | Notes                                       |
+| --------------- | ------------------------------------- | ------------------------------------------- |
+| `.env`          | `BM_LIVE_TOKEN`, `NOTES_TOKEN`        | Secrets. Gitignored. Never committed.       |
+| `environment:`  | `LOG_LEVEL`                           | Non-secret defaults in `docker-compose.yml`.|
+| `config/*.yaml` | `gateway.host`, `upstream_servers[]`  | Committed examples + gitignored `gateway.yaml`. |
+| Image           | `/app/config/gateway.example.yaml`    | The committed example baked at build time.  |
+
+If a value needs to be different per environment (dev / staging / prod), it
+belongs in `.env` or in your `config/gateway.yaml`, **not** in the compose
+file or the image. That's the whole point.
+
+### Why a bind mount, not `image: build`
+
+Rebuilding the image on every config edit would (1) require a Docker daemon
+in the deploy pipeline, (2) leak secret values into image layers if you're
+not careful, and (3) make `docker compose config` non-reproducible. A
+read-only bind mount keeps config out of the image, the same way Kubernetes
+keeps it out of the pod spec via a ConfigMap + Secret.
+
 ## Kubernetes
 
 Apply manifests in order:

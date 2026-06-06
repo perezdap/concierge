@@ -100,48 +100,43 @@ python -m concierge --config config/gateway.example.yaml
 
 Then point any Streamable HTTP MCP client at `http://127.0.0.1:8765/mcp`.
 
-## Run with Docker Compose
+## Run with Docker Compose (Twelve-Factor)
 
-Create or edit `config/gateway.yaml`, then start the gateway:
+The compose stack follows [Twelve-Factor](https://12factor.net/config) so you
+can spin up, reconfigure, and roll the gateway **without rebuilding the image
+or editing the compose file**. Secrets stay in `.env` (gitignored), config
+lives in `config/`, and the compose file just wires the two together.
 
-```powershell
-docker compose up -d --build
+**Out of the box** — uses the committed `config/gateway.example.yaml` (the
+local `echo` stdio upstream only, no tokens needed):
+
+```bash
+docker compose up --build
 ```
+
+**Adding real upstream tokens** — drop them in `.env`, no rebuild:
+
+```bash
+cp .env.example .env                # gitignored
+$EDITOR .env                        # set BM_LIVE_TOKEN, NOTES_TOKEN, etc.
+docker compose up --force-recreate
+```
+
+The compose file bind-mounts `./config:/app/config:ro`, so any edit to a file
+in `config/` is picked up on the next `docker compose up --force-recreate` —
+no image rebuild. To use a separate, gitignored `config/gateway.yaml` of your
+own, copy the example and add a `docker-compose.override.yml` that overrides
+the `command:` to point at it.
 
 The Compose file runs Concierge on `http://127.0.0.1:8765/mcp` and checks
 `/healthz` for container health.
 
-Important: the Docker image copies `config/` at build time unless you add a bind
-mount. If you edit `config/gateway.yaml` after the container has been built,
-either rebuild/recreate the container:
+> **Tip**: For the simplest possible setup (echo server only, no env vars),
+> pass `--config /app/config/minimal.yaml` in a `docker-compose.override.yml`.
 
-```powershell
-docker compose up -d --build --force-recreate
-```
-
-Or add a development bind mount so config changes are picked up on recreate:
-
-```yaml
-services:
-  concierge:
-    volumes:
-      - ./config:/app/config:ro
-```
-
-Then run:
-
-```powershell
-docker compose up -d --force-recreate
-```
-
-Check what config the running container is actually using:
-
-```powershell
-docker exec concierge-concierge-1 python -c "from pathlib import Path; print(Path('/app/config/gateway.yaml').read_text())"
-```
-
-Do not commit real bearer tokens in `config/gateway.yaml`; prefer `${TOKEN_NAME}`
-placeholders and pass secrets through Compose environment variables.
+See [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) for the full
+"Twelve-Factor compose" walkthrough (override patterns, where each value
+comes from, why a bind mount instead of `image: build`).
 
 ## Demo (no client required)
 

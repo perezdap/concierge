@@ -49,3 +49,4 @@ frontend/dist/
 mcps/
 concierge-runtime-config.db*
 /NUL
+!.env.example

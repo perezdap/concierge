@@ -5,6 +5,7 @@ Single YAML file. Pydantic models validate it and surface clear errors.
 """
 from __future__ import annotations
 
+import logging
 import os
 import re
 from pathlib import Path
@@ -14,6 +15,8 @@ import yaml
 from pydantic import BaseModel, Field
 
 from .core.types import RiskLevel
+
+_log = logging.getLogger("concierge.config")
 
 
 class GatewayHttpConfig(BaseModel):
@@ -329,32 +332,113 @@ class GatewayConfig(BaseModel):
 _ENV_VAR_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
 
 
+def _comment_start(line: str) -> int | None:
+    """Return the index of the first unquoted ``#`` in ``line`` (YAML comment
+    start), or ``None`` if the line has no comment.
+
+    Tracks a tiny single/double-quote state machine so that a ``#`` inside a
+    quoted scalar (``"a # b"`` / ``'a # b'``) is not treated as a comment
+    introducer. Backslash escapes are not handled — YAML single-quoted scalars
+    do not process escapes, and double-quoted ones use a small subset that
+    does not produce ``#``; keeping this simple matches the operator's
+    documentation guidance and avoids pretending to be a full YAML parser.
+    """
+    in_single = False
+    in_double = False
+    for i, ch in enumerate(line):
+        if ch == "'" and not in_double:
+            in_single = not in_single
+        elif ch == '"' and not in_single:
+            in_double = not in_double
+        elif ch == "#" and not in_single and not in_double:
+            return i
+    return None
+
+
 def expand_env(text: str) -> str:
     """Substitute ${VAR} / ${VAR:-default} from the environment.
 
     A ${VAR} with no default that is unset is an error — surfacing it beats
     silently passing the literal "${VAR}" through as (e.g.) a secret.
+
+    YAML ``#`` comments are skipped: ``${VAR}`` references appearing inside
+    a comment are not expanded and do not trigger the undefined-variable
+    error. This lets operators write helpful documentation like
+    ``# set ${BM_LIVE_TOKEN} in .env`` without breaking startup. References
+    that genuinely appear in YAML values (outside any comment, and not
+    inside quoted scalars that contain a ``#``) still raise as before.
+
+    A ${VAR} (no default) that is set to the empty string emits a
+    WARNING-level log entry naming the variable. This catches the common
+    "operator copied .env.example and forgot to fill in BM_LIVE_TOKEN" footgun
+    without breaking the legitimate use case of an explicit empty
+    ``${VAR:-}`` default.
     """
     missing: list[str] = []
+    # Track set-but-empty (no-default) variables seen across this call so we
+    # log a single warning per variable, not one per occurrence.
+    empty_no_default: set[str] = set()
 
     def _sub(m: re.Match[str]) -> str:
         name, default = m.group(1), m.group(2)
         value = os.environ.get(name)
         if value is not None:
+            if value == "" and default is None:
+                # Bare ${VAR} (no default) that is set to "" is a likely
+                # misconfiguration (forgot-to-fill-in-the-secret), not an
+                # intentional empty substitution. Warn loudly.
+                empty_no_default.add(name)
             return value
         if default is not None:
             return default
         missing.append(name)
         return ""
 
-    expanded = _ENV_VAR_RE.sub(_sub, text)
+    # A single shared `missing` list across the whole call. References inside
+    # YAML comments are never scanned, so they cannot end up here; references
+    # in actual values that are unset-without-default all get reported in one
+    # sorted, de-duplicated error at the end.
+    out_lines: list[str] = []
+    for line in text.splitlines(keepends=True):
+        # Strip the trailing newline (if any) so _comment_start indexes the
+        # raw scalar; we re-attach it afterwards so output byte-equivalence
+        # with the input is preserved.
+        if line.endswith("\n"):
+            body, nl = line[:-1], "\n"
+        else:
+            body, nl = line, ""
+        cut = _comment_start(body)
+        if cut is None:
+            out_lines.append(_ENV_VAR_RE.sub(_sub, body) + nl)
+        else:
+            out_lines.append(_ENV_VAR_RE.sub(_sub, body[:cut]) + body[cut:] + nl)
+
+    if empty_no_default:
+        for name in sorted(empty_no_default):
+            # Distinct from the "undefined" error path: set-but-empty is a
+            # likely-misconfigured-secret, not a missing env var. Operators
+            # get a WARNING they can grep for, not a crash.
+            _log.warning(
+                "config references %s which is set to the empty string in the "
+                "environment; substituting \"\" — if this is a secret (e.g. "
+                "BM_LIVE_TOKEN) you almost certainly forgot to fill in the "
+                "value in .env. Use ${%s:-} for an intentional empty value.",
+                name,
+                name,
+            )
     if missing:
         names = ", ".join(sorted(set(missing)))
         raise ValueError(
             f"config references undefined environment variable(s): {names}. "
-            "Set them, or supply a default with ${VAR:-default}."
+            f"Set them, or supply a default with ${{VAR:-default}}."
         )
-    return expanded
+    return "".join(out_lines)
+
+
+# TODO(vNEXT): promote the empty-but-set warning above to a hard ValueError
+# after operators have had a release cycle to migrate `${VAR}` →
+# `${VAR:-}` where they genuinely want the empty value. The plan/issue
+# tracker should record the migration deadline so it isn't lost.
 
 
 def load_config(path: str | Path) -> GatewayConfig:
