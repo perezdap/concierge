@@ -71,7 +71,9 @@ concierge/
 
 ## Configuration knobs
 
-Loaded by `config.py` from a single YAML file (see `config/gateway.example.yaml`).
+Loaded by `config.py` from a single YAML file. Quick picks: `config/starter.yaml`
+(local), `config/starter.docker.yaml` (Docker), `config/gateway.example.yaml`
+(full example). Walkthrough: `docs/GETTING_STARTED.md`.
 Beyond the MVP fields, optimization adds:
 
 **Per upstream (`upstream_servers[]`)**

@@ -136,10 +136,13 @@ kubectl create secret generic concierge-upstreams \
 docker compose up --build
 ```
 
-This starts the gateway with `config/gateway.example.yaml`, publishing **8765**
-on the host. The compose health check mirrors the k8s liveness probe
-(`GET /healthz`). `stop_grace_period` is set above the app's drain window so
-`docker compose down` drains in-flight calls before SIGKILL.
+This starts the gateway with `config/starter.docker.yaml`, publishing **8765**
+on the host. Admin-panel state persists in `./data/concierge-runtime-config.db`
+(bind mount `./data:/app/data`). The compose health check mirrors the k8s
+liveness probe (`GET /healthz`). `stop_grace_period` is set above the app's
+drain window so `docker compose down` drains in-flight calls before SIGKILL.
+
+Operator walkthrough: [`GETTING_STARTED.md`](GETTING_STARTED.md).
 
 Point MCP clients at `http://127.0.0.1:8765/mcp`. For a local smoke test of
 readiness:
@@ -179,12 +182,12 @@ The defaults work out of the box:
 docker compose up --build
 ```
 
-This starts the gateway with the committed `config/gateway.example.yaml`,
-exposes **8765**, and reads any non-secret env vars you set in your shell.
-The example config uses `${VAR:-}` for upstream credential placeholders so
-a fresh clone boots without a populated `.env`; remote upstreams get empty
-auth headers until you fill in `.env`. Use bare `${VAR}` (no default) in
-your own configs when a secret must be present at startup.
+This starts the gateway with `config/starter.docker.yaml` (minimal admin-first
+config; bearer auth via `GATEWAY_TOKEN` in `.env`), exposes **8765**, and
+persists runtime config under `./data/`. Switch to `config/gateway.example.yaml`
+via a `docker-compose.override.yml` when you want the full example upstreams.
+Use bare `${VAR}` (no default) in your own configs when a secret must be present
+at startup.
 
 ### Customizing the config (no image rebuild)
 

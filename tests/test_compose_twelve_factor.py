@@ -103,6 +103,28 @@ def test_compose_has_env_file():
             )
 
 
+def test_compose_mounts_data_volume_for_runtime_config():
+    """Admin-panel SQLite must survive container recreate (not live on the
+    ephemeral container layer)."""
+    data = _load_compose()
+    volumes = data["services"]["concierge"].get("volumes", [])
+    found = False
+    for v in volumes:
+        if isinstance(v, dict):
+            source = v.get("source", "")
+            target = v.get("target", "")
+            if source.endswith("data") and target == "/app/data":
+                found = True
+                break
+        elif isinstance(v, str) and v.startswith("./data:/app/data"):
+            found = True
+            break
+    assert found, (
+        "Expected ./data:/app/data bind mount for concierge-runtime-config.db "
+        f"persistence. Got volumes: {volumes!r}"
+    )
+
+
 def test_compose_command_points_at_a_config_in_the_mounted_path():
     """The active --config argument should resolve to a path inside the
     bind-mounted /app/config, so operator edits show up without rebuild."""
