@@ -195,12 +195,19 @@ export interface SignInStartResult {
 }
 
 export interface SignInStartRequest {
+  resource_url?: string;
   provider?: string;
   issuer?: string;
   client_id?: string;
   scopes?: string;
   client_secret?: string;
   redirect_uri?: string;
+}
+
+export interface ProbeResult {
+  supports_dcr: boolean;
+  authorization_server: string | null;
+  protected: boolean;
 }
 
 export interface ProfileSelector {
@@ -314,6 +321,10 @@ export const api = {
     request<{ providers: OAuthProviderInfo[] }>("/admin/oauth/providers"),
   oauthStatus: (id: string) =>
     request<OAuthStatus>(`/admin/oauth/${encodeURIComponent(id)}/status`),
+  oauthProbe: (id: string, resourceUrl: string) =>
+    postJson<ProbeResult>(`/admin/oauth/${encodeURIComponent(id)}/probe`, {
+      resource_url: resourceUrl,
+    }),
   oauthSignInStart: (id: string, body: SignInStartRequest) =>
     postJson<SignInStartResult>(`/admin/oauth/${encodeURIComponent(id)}/sign-in/start`, body),
   oauthDisconnect: (id: string) =>

@@ -25,9 +25,18 @@ class DiscoverRequest(BaseModel):
     issuer: str = Field(min_length=1)
 
 
+class ProbeRequest(BaseModel):
+    resource_url: str = Field(min_length=1)
+
+
 class SignInStartRequest(BaseModel):
-    # Either supply a built-in ``provider`` (endpoints/scopes/creds resolved
-    # server-side) or the explicit issuer/client_id for a custom OIDC provider.
+    # Resolution priority:
+    # 1. ``resource_url`` set -> zero-config: probe the MCP server (RFC 9728),
+    #    discover its authorization server (RFC 8414/OIDC), and dynamically
+    #    register a client (RFC 7591). No provider, secret, or operator setup.
+    # 2. ``provider`` set -> built-in preset endpoints/scopes/creds.
+    # 3. explicit ``issuer`` + ``client_id`` -> custom OIDC provider.
+    resource_url: str | None = None
     provider: str | None = None
     issuer: str | None = None
     client_id: str | None = None
@@ -62,17 +71,21 @@ class AdminOAuthDeps:
     public_base_url: str = "http://127.0.0.1:8765"
 
 
-async def _resolve_sign_in(deps: AdminOAuthDeps, body: SignInStartRequest) -> _ResolvedSignIn:
+async def _resolve_sign_in(
+    deps: AdminOAuthDeps, body: SignInStartRequest, *, upstream_id: str
+) -> _ResolvedSignIn:
     """Resolve a sign-in request into concrete endpoints/scopes/credentials.
 
-    Two modes:
-    * ``provider`` set -> use the built-in preset's endpoints/scopes/quirks and
-      operator-configured app credentials (one-click path). The request may
-      still override scopes or supply credentials when the operator has not set
-      env vars (bring-your-own fallback).
-    * no ``provider`` -> custom OIDC: require issuer + client_id, discover
-      endpoints.
+    Three modes (see :class:`SignInStartRequest` for priority):
+    * ``resource_url`` -> zero-config DCR (probe + discover + register).
+    * ``provider`` -> built-in preset endpoints/scopes/quirks + operator creds.
+    * ``issuer`` + ``client_id`` -> custom OIDC.
     """
+    redirect_uri = body.redirect_uri or (
+        f"{deps.public_base_url.rstrip('/')}/admin/oauth/callback"
+    )
+    if body.resource_url:
+        return await _resolve_dcr(deps, body, upstream_id=upstream_id, redirect_uri=redirect_uri)
     if body.provider:
         preset = get_provider(body.provider)
         if preset is None:
@@ -115,6 +128,61 @@ async def _resolve_sign_in(deps: AdminOAuthDeps, body: SignInStartRequest) -> _R
         discovery=discovery,
         client_id=body.client_id,
         client_secret=body.client_secret,
+        scopes=body.scopes or "",
+        extra_authorize_params={},
+    )
+
+
+async def _resolve_dcr(
+    deps: AdminOAuthDeps, body: SignInStartRequest, *, upstream_id: str, redirect_uri: str
+) -> _ResolvedSignIn:
+    """Zero-config resolution for a spec-compliant remote MCP server.
+
+    Probes the resource for its authorization server (RFC 9728), discovers the
+    AS metadata (RFC 8414/OIDC), and dynamically registers a public client
+    (RFC 7591) so no client_id/secret or operator setup is needed.
+    """
+    resource_url = body.resource_url or ""
+    auth_servers = await deps.oauth.probe_resource_metadata(resource_url)
+    if not auth_servers:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "upstream did not advertise an OAuth authorization server "
+                "(no 401 Protected Resource Metadata). Use a provider preset or "
+                "supply issuer/client_id instead."
+            ),
+        )
+    discovery = await deps.oauth.discover_authorization_server(auth_servers[0])
+    if not discovery.registration_endpoint:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "authorization server does not support Dynamic Client "
+                "Registration. Use a provider preset or supply client_id."
+            ),
+        )
+    # Reuse a previously-registered client for this (upstream, issuer) rather
+    # than registering a fresh one on every Connect — repeated sign-ins would
+    # otherwise accumulate orphaned client registrations on the auth server.
+    existing = await deps.credentials.load_client_registration(upstream_id, discovery.issuer)
+    if existing is not None:
+        client_id, client_secret = existing
+    else:
+        client_id, client_secret = await deps.oauth.register_client(
+            registration_endpoint=discovery.registration_endpoint,
+            redirect_uri=redirect_uri,
+        )
+        await deps.credentials.save_client_registration(
+            upstream_id,
+            discovery.issuer,
+            client_id=client_id,
+            client_secret=client_secret,
+        )
+    return _ResolvedSignIn(
+        discovery=discovery,
+        client_id=client_id,
+        client_secret=client_secret,
         scopes=body.scopes or "",
         extra_authorize_params={},
     )
@@ -163,6 +231,34 @@ def build_admin_oauth_router(deps: AdminOAuthDeps) -> APIRouter:
         """Browser-safe catalog of built-in providers (never returns secrets)."""
         return {"providers": public_catalog()}
 
+    @router.post("/{upstream_id}/probe")
+    async def probe(
+        upstream_id: str,
+        body: ProbeRequest,
+        _auth: AuthResult = Depends(_auth),
+    ) -> dict[str, Any]:
+        """Check whether an MCP upstream supports zero-config OAuth (DCR).
+
+        Returns ``{supports_dcr, authorization_server}`` so the UI can offer a
+        no-secret one-click Connect when the upstream is spec-compliant.
+        """
+        auth_servers = await deps.oauth.probe_resource_metadata(body.resource_url)
+        if not auth_servers:
+            return {"supports_dcr": False, "authorization_server": None, "protected": False}
+        try:
+            discovery = await deps.oauth.discover_authorization_server(auth_servers[0])
+        except Exception:  # noqa: BLE001
+            return {
+                "supports_dcr": False,
+                "authorization_server": auth_servers[0],
+                "protected": True,
+            }
+        return {
+            "supports_dcr": bool(discovery.registration_endpoint),
+            "authorization_server": discovery.issuer,
+            "protected": True,
+        }
+
     @router.post("/{upstream_id}/discover")
     async def discover(
         upstream_id: str,
@@ -189,7 +285,7 @@ def build_admin_oauth_router(deps: AdminOAuthDeps) -> APIRouter:
     ) -> dict[str, str]:
         redirect = body.redirect_uri or f"{deps.public_base_url.rstrip('/')}/admin/oauth/callback"
         try:
-            params = await _resolve_sign_in(deps, body)
+            params = await _resolve_sign_in(deps, body, upstream_id=upstream_id)
             auth_url, state = deps.oauth.begin_authorization_code(
                 upstream_id=upstream_id,
                 discovery=params.discovery,

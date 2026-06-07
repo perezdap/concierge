@@ -4,10 +4,11 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import re
 import secrets
 import time
 from dataclasses import dataclass
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit
 
 import httpx
 
@@ -19,6 +20,8 @@ from .redaction import redact_for_audit
 _log = get_logger("concierge.admin.oauth")
 
 EVENT_OAUTH_DISCOVER = "admin.oauth.discover"
+EVENT_OAUTH_PROBE = "admin.oauth.probe"
+EVENT_OAUTH_REGISTER = "admin.oauth.register"
 EVENT_OAUTH_SIGNIN = "admin.oauth.sign_in"
 EVENT_OAUTH_CALLBACK = "admin.oauth.callback"
 EVENT_OAUTH_REFRESH = "admin.oauth.refresh"
@@ -33,6 +36,9 @@ class OAuthDiscoveryDocument:
     authorization_endpoint: str
     token_endpoint: str
     revocation_endpoint: str | None = None
+    # RFC 7591 Dynamic Client Registration endpoint, when the authorization
+    # server advertises one. Presence enables zero-config registration.
+    registration_endpoint: str | None = None
 
 
 @dataclass
@@ -78,6 +84,43 @@ class OAuthPendingStore:
         expired = [k for k, v in self._pending.items() if now > v.expires_at]
         for key in expired:
             self._pending.pop(key, None)
+
+
+def _parse_resource_metadata_url(www_authenticate: str) -> str | None:
+    """Extract the ``resource_metadata`` URL from a WWW-Authenticate header.
+
+    Per RFC 9728 Section 5.1, a protected resource's 401 challenge carries a
+    ``resource_metadata="<url>"`` parameter pointing at its PRM document.
+    """
+    match = re.search(r'resource_metadata\s*=\s*"([^"]+)"', www_authenticate)
+    if match:
+        return match.group(1)
+    match = re.search(r"resource_metadata\s*=\s*([^\s,]+)", www_authenticate)
+    return match.group(1) if match else None
+
+
+def _origin_of(url: str) -> str:
+    """Return scheme://host[:port] for ``url`` (no path/query)."""
+    parsed = urlsplit(url)
+    return f"{parsed.scheme}://{parsed.netloc}"
+
+
+_DEFAULT_PORTS = {"http": 80, "https": 443}
+
+
+def _same_origin(a: str, b: str) -> bool:
+    """True when ``a`` and ``b`` share scheme, host, and (normalized) port.
+
+    An explicit default port (``:443`` for https, ``:80`` for http) is treated
+    as equal to an omitted one.
+    """
+
+    def _origin(url: str) -> tuple[str, str | None, int | None]:
+        p = urlsplit(url)
+        port = p.port if p.port is not None else _DEFAULT_PORTS.get(p.scheme)
+        return (p.scheme, p.hostname, port)
+
+    return _origin(a) == _origin(b)
 
 
 def _b64url(data: bytes) -> str:
@@ -132,7 +175,10 @@ class UpstreamOAuthService:
     async def _client(self) -> httpx.AsyncClient:
         if self._http is not None:
             return self._http
-        return httpx.AsyncClient(timeout=10.0)
+        # follow_redirects=False is httpx's default, set explicitly here as an
+        # SSRF guard: discovery/probe/registration fetch attacker-influenced
+        # URLs, and we must not let a redirect bounce them at internal hosts.
+        return httpx.AsyncClient(timeout=10.0, follow_redirects=False)
 
     async def discover(self, issuer: str) -> OAuthDiscoveryDocument:
         url = issuer.rstrip("/") + "/.well-known/openid-configuration"
@@ -153,6 +199,7 @@ class UpstreamOAuthService:
             authorization_endpoint=str(authz),
             token_endpoint=str(token),
             revocation_endpoint=doc.get("revocation_endpoint"),
+            registration_endpoint=doc.get("registration_endpoint"),
         )
         if self.audit:
             self.audit.emit(
@@ -160,6 +207,134 @@ class UpstreamOAuthService:
                 **redact_for_audit({"issuer": discovery.issuer, "ok": True}),
             )
         return discovery
+
+    async def discover_authorization_server(self, base_url: str) -> OAuthDiscoveryDocument:
+        """Discover AS metadata trying OAuth then OIDC well-known endpoints.
+
+        RFC 8414 (oauth-authorization-server) is tried first, then OIDC
+        (openid-configuration), per the MCP authorization spec. ``base_url`` is
+        the authorization server issuer/base; the well-known path is appended.
+        """
+        base = base_url.rstrip("/")
+        last_err: Exception | None = None
+        for suffix in (
+            "/.well-known/oauth-authorization-server",
+            "/.well-known/openid-configuration",
+        ):
+            client = await self._client()
+            try:
+                resp = await client.get(base + suffix)
+                resp.raise_for_status()
+                doc = resp.json()
+            except Exception as e:  # noqa: BLE001
+                last_err = e
+                continue
+            finally:
+                if self._http is None:
+                    await client.aclose()
+            authz = doc.get("authorization_endpoint")
+            token = doc.get("token_endpoint")
+            if not authz or not token:
+                last_err = ValueError("AS metadata missing authorization or token endpoint")
+                continue
+            return OAuthDiscoveryDocument(
+                issuer=str(doc.get("issuer", base)),
+                authorization_endpoint=str(authz),
+                token_endpoint=str(token),
+                revocation_endpoint=doc.get("revocation_endpoint"),
+                registration_endpoint=doc.get("registration_endpoint"),
+            )
+        raise ValueError(f"could not discover authorization server at {base}: {last_err}")
+
+    async def probe_resource_metadata(self, resource_url: str) -> list[str]:
+        """Probe an MCP server for its authorization server(s) (RFC 9728).
+
+        Per the MCP auth spec, an unauthenticated request to a protected MCP
+        server returns ``401`` with a ``WWW-Authenticate`` header carrying a
+        ``resource_metadata`` URL. We fetch that Protected Resource Metadata
+        document and return its ``authorization_servers`` list.
+
+        Falls back to the conventional ``/.well-known/oauth-protected-resource``
+        path when the header is absent. Returns an empty list when the resource
+        is not protected (no 401) or advertises no authorization servers.
+        """
+        client = await self._client()
+        try:
+            resp = await client.get(resource_url)
+            prm_url: str | None = None
+            if resp.status_code == 401:
+                candidate = _parse_resource_metadata_url(resp.headers.get("WWW-Authenticate", ""))
+                # SSRF guard: the resource_metadata URL is attacker-controlled
+                # (an upstream response header). RFC 9728 requires the PRM
+                # document to live on the protected resource's own origin, so a
+                # cross-origin pointer is illegitimate — ignore it and fall back
+                # to the well-known path rather than fetching an arbitrary host.
+                if candidate and _same_origin(candidate, resource_url):
+                    prm_url = candidate
+            if prm_url is None:
+                # Fall back to the well-known PRM path on the resource origin.
+                origin = _origin_of(resource_url)
+                prm_url = origin + "/.well-known/oauth-protected-resource"
+            meta_resp = await client.get(prm_url)
+            if meta_resp.status_code != 200:
+                return []
+            doc = meta_resp.json()
+        except Exception:  # noqa: BLE001
+            return []
+        finally:
+            if self._http is None:
+                await client.aclose()
+        servers = doc.get("authorization_servers") if isinstance(doc, dict) else None
+        result = [str(s) for s in servers] if isinstance(servers, list) else []
+        if self.audit:
+            self.audit.emit(
+                EVENT_OAUTH_PROBE,
+                **redact_for_audit({"resource": resource_url, "as_count": len(result)}),
+            )
+        return result
+
+    async def register_client(
+        self,
+        *,
+        registration_endpoint: str,
+        redirect_uri: str,
+        client_name: str = "Concierge MCP Gateway",
+    ) -> tuple[str, str | None]:
+        """Dynamically register an OAuth client (RFC 7591).
+
+        Returns ``(client_id, client_secret)``; ``client_secret`` is ``None`` for
+        public clients (the common case for PKCE). Registers as a ``native``
+        application using the authorization-code grant with PKCE so no secret is
+        required and no operator setup is needed.
+        """
+        payload = {
+            "client_name": client_name,
+            "redirect_uris": [redirect_uri],
+            "grant_types": ["authorization_code", "refresh_token"],
+            "response_types": ["code"],
+            "token_endpoint_auth_method": "none",
+            "application_type": "native",
+        }
+        client = await self._client()
+        try:
+            resp = await client.post(registration_endpoint, json=payload)
+            resp.raise_for_status()
+            doc = resp.json()
+        finally:
+            if self._http is None:
+                await client.aclose()
+        if not isinstance(doc, dict) or not doc.get("client_id"):
+            raise ValueError("dynamic client registration returned no client_id")
+        client_id = str(doc["client_id"])
+        secret = doc.get("client_secret")
+        if self.audit:
+            self.audit.emit(
+                EVENT_OAUTH_REGISTER,
+                **redact_for_audit(
+                    {"registration_endpoint": registration_endpoint, "ok": True}
+                ),
+            )
+        return client_id, (str(secret) if secret else None)
 
     def begin_authorization_code(
         self,
