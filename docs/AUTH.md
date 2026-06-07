@@ -140,6 +140,46 @@ This means there are two supported ways to authenticate an upstream:
 Raw tokens are never logged; only opaque ids / salted digests appear in audit
 events (`admin.oauth.*`).
 
+### One-click providers (GitHub, Google, Microsoft 365, Atlassian)
+
+The admin console ships built-in presets for the common SaaS providers so end
+users connect an upstream with a single **Connect** button on the Upstreams page
+— no endpoints, scopes, or token JSON to type. This is the standard
+"bring-your-own OAuth app" model used by self-hosted tools (GitLab, Grafana,
+Mattermost): the **operator** registers one OAuth app per provider once, and
+every end user then gets the one-click flow.
+
+**One-time operator setup (per provider):**
+
+1. Register an OAuth app with the provider.
+2. Set the **redirect URI** on that app to exactly:
+   `${public_base_url}/admin/oauth/callback`
+   (e.g. `https://concierge.example.com/admin/oauth/callback`). `public_base_url`
+   must be the externally reachable URL — not `127.0.0.1` — in production.
+3. Export the app credentials as environment variables:
+
+   | Provider   | Client ID env var                      | Client secret env var                      |
+   |------------|----------------------------------------|--------------------------------------------|
+   | GitHub     | `CONCIERGE_OAUTH_GITHUB_CLIENT_ID`     | `CONCIERGE_OAUTH_GITHUB_CLIENT_SECRET`     |
+   | Google     | `CONCIERGE_OAUTH_GOOGLE_CLIENT_ID`     | `CONCIERGE_OAUTH_GOOGLE_CLIENT_SECRET`     |
+   | Microsoft  | `CONCIERGE_OAUTH_MICROSOFT_CLIENT_ID`  | `CONCIERGE_OAUTH_MICROSOFT_CLIENT_SECRET`  |
+   | Atlassian  | `CONCIERGE_OAUTH_ATLASSIAN_CLIENT_ID`  | `CONCIERGE_OAUTH_ATLASSIAN_CLIENT_SECRET`  |
+
+When both vars are set, the provider shows as **ready** and the console renders a
+one-click button. If they are not set, the console falls back to asking the
+operator to paste the client ID/secret for that provider (no env required, but
+not one-click). Secrets are read server-side only and are never sent to the
+browser (`GET /admin/oauth/providers` returns presence flags, never values).
+
+**Refresh-token correctness.** The presets force the provider consent screen on
+every (re)connect (`prompt=consent`, plus Google's `access_type=offline`) because
+Google/Atlassian/Microsoft only return a refresh token on first consent —
+without this, auto-refresh would silently never receive a refresh token. GitHub
+has no OIDC discovery document, so its endpoints are hardcoded in the preset.
+
+Providers beyond these four still work via the generic flow: supply an `issuer`
++ `client_id` (custom OIDC) instead of a `provider` id.
+
 ---
 
 ## mTLS pass-through (`mtls`)

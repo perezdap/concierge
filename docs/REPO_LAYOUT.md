@@ -68,7 +68,8 @@ concierge/
     ├── test_discovery.py        # profile-scoped discovery + list_changed coalescing
     ├── test_metrics.py          # audit payload sizes + pool/session lifecycle events
     ├── test_config.py           # config defaults + validation (session_pool/payload)
-    └── test_upstream_auth_injection.py # dynamic OAuth header injection + refresh into adapters
+    ├── test_upstream_auth_injection.py # dynamic OAuth header injection + refresh into adapters
+    └── test_oauth_providers.py  # built-in provider presets + provider-driven sign-in
 ```
 
 ## Configuration knobs
