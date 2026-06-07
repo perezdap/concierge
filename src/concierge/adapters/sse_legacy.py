@@ -15,7 +15,7 @@ import asyncio
 import json
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import httpx
 
@@ -28,6 +28,9 @@ from ..errors import (
 from ..util.log import get_logger
 from ._jsonrpc import build_notification, build_request, unwrap_result
 from .base import UpstreamAdapter
+
+if TYPE_CHECKING:
+    from .auth_headers import AuthHeaderProvider
 
 _log = get_logger("concierge.adapter.sse_legacy")
 
@@ -43,12 +46,14 @@ class LegacySseAdapter(UpstreamAdapter):
         headers: dict[str, str] | None = None,
         request_timeout_s: float = 30.0,
         post_url: str | None = None,
+        auth_header_provider: AuthHeaderProvider | None = None,
     ) -> None:
         self.server_id = server_id
         self.sse_url = sse_url
         self.headers = headers or {}
         self.request_timeout_s = request_timeout_s
         self._post_url_override = post_url
+        self._auth_header_provider = auth_header_provider
 
         self._client: httpx.AsyncClient | None = None
         self._post_url: str | None = post_url
@@ -129,7 +134,7 @@ class LegacySseAdapter(UpstreamAdapter):
         if client is None:
             return
         try:
-            headers = {"Accept": "text/event-stream", **self.headers}
+            headers = {"Accept": "text/event-stream", **(await self._auth_headers())}
             async with client.stream("GET", self.sse_url, headers=headers) as resp:
                 if resp.status_code >= 400:
                     self._last_error = f"SSE connect failed: {resp.status_code}"
@@ -150,6 +155,13 @@ class LegacySseAdapter(UpstreamAdapter):
                 if not fut.done():
                     fut.set_exception(UpstreamUnavailable("sse stream closed"))
             self._pending.clear()
+
+    async def _auth_headers(self) -> dict[str, str]:
+        """Static config headers plus dynamic auth headers (auth wins)."""
+        h = dict(self.headers)
+        if self._auth_header_provider is not None:
+            h.update(await self._auth_header_provider.headers(self.server_id))
+        return h
 
     def _resolve_endpoint(self, raw: str) -> str:
         # The endpoint can be absolute or relative to the SSE URL host.
@@ -185,7 +197,7 @@ class LegacySseAdapter(UpstreamAdapter):
         self._pending[req["id"]] = fut
         try:
             resp = await self._client.post(
-                self._post_url, json=req, headers=self.headers,
+                self._post_url, json=req, headers=await self._auth_headers(),
                 timeout=self.request_timeout_s,
             )
             if resp.status_code >= 400:
@@ -216,7 +228,7 @@ class LegacySseAdapter(UpstreamAdapter):
         try:
             await self._client.post(
                 self._post_url, json=build_notification(method, params),
-                headers=self.headers, timeout=self.request_timeout_s,
+                headers=await self._auth_headers(), timeout=self.request_timeout_s,
             )
         except httpx.HTTPError:
             pass

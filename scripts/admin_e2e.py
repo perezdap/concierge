@@ -296,17 +296,21 @@ def _build_admin_app(work_dir: Path) -> tuple[Any, Any, Any]:
     http = httpx.AsyncClient(transport=httpx.ASGITransport(app=idp), base_url=ISSUER)
     backend = InMemoryCredentialStore(key=resolve_fernet_key("admin-e2e-oauth-key"))
     credentials = UpstreamCredentialStore(backend=backend)
-    oauth = UpstreamOAuthService(
+    oauth_fake = UpstreamOAuthService(
         credential_store=credentials,
         pending=OAuthPendingStore(ttl_s=120.0),
         http_client=http,
     )
 
-    def fake_oauth_deps(*, auth: Any, audit: Any, config: Any) -> AdminOAuthDeps:
+    def fake_oauth_deps(
+        *, auth: Any, audit: Any, config: Any, oauth: Any = None
+    ) -> AdminOAuthDeps:
+        # Ignore the app-built ``oauth`` and inject the fake IDP-backed service.
+        del oauth
         host = config.gateway.host if config.gateway.host not in ("0.0.0.0", "::") else "127.0.0.1"
         return AdminOAuthDeps(
             auth=auth,
-            oauth=oauth,
+            oauth=oauth_fake,
             credentials=credentials,
             audit=audit,
             public_base_url=f"http://{host}:{config.gateway.port}",
@@ -323,11 +327,11 @@ def _build_admin_app(work_dir: Path) -> tuple[Any, Any, Any]:
         app = app_mod.build_app(config)
     finally:
         app_mod._build_oauth_deps = original
-    app.state.admin_e2e_oauth = oauth
+    app.state.admin_e2e_oauth = oauth_fake
     app.state.admin_e2e_credentials = credentials
     app.state.admin_e2e_oauth_http = http
     app.state.admin_e2e_idp = idp
-    return app, oauth, idp
+    return app, oauth_fake, idp
 
 
 def _verify_spa_mount(client: TestClient) -> dict[str, Any]:

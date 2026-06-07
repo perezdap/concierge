@@ -16,6 +16,7 @@ from typing import Any
 from fastapi import APIRouter, FastAPI, Request
 from fastapi.responses import JSONResponse
 
+from ..adapters.auth_headers import AuthHeaderProvider, OAuthAuthHeaderProvider
 from ..adapters.base import UpstreamAdapter
 from ..adapters.caching import CachingAdapter
 from ..adapters.custom import build_custom_adapter
@@ -131,7 +132,11 @@ _HTTP_STATUS_FOR_GATEWAY_CODE: dict[int, int] = {
 }
 
 
-def _build_adapter(cfg: UpstreamServerConfig) -> UpstreamAdapter:
+def _build_adapter(
+    cfg: UpstreamServerConfig,
+    *,
+    auth_header_provider: AuthHeaderProvider | None = None,
+) -> UpstreamAdapter:
     if cfg.transport == "stdio":
         if not cfg.command:
             raise ValueError(f"{cfg.id}: stdio transport requires 'command'")
@@ -150,6 +155,7 @@ def _build_adapter(cfg: UpstreamServerConfig) -> UpstreamAdapter:
             url=cfg.url,
             headers=cfg.headers,
             request_timeout_s=cfg.request_timeout_s,
+            auth_header_provider=auth_header_provider,
         )
     if cfg.transport == "sse_legacy":
         if not cfg.sse_url:
@@ -160,6 +166,7 @@ def _build_adapter(cfg: UpstreamServerConfig) -> UpstreamAdapter:
             post_url=cfg.post_url,
             headers=cfg.headers,
             request_timeout_s=cfg.request_timeout_s,
+            auth_header_provider=auth_header_provider,
         )
     if cfg.transport == "custom":
         if not cfg.custom_kind:
@@ -467,6 +474,7 @@ def _assemble_runtime_bundle(
     audit: AuditLogger,
     metrics: MetricRegistry,
     on_session_evict: Callable[[str], Awaitable[None]],
+    auth_header_provider: AuthHeaderProvider | None = None,
 ) -> RuntimeBundle:
     """Build swappable gateway runtime from a GatewayConfig (hot-reload path)."""
     catalog = _build_catalog_store(config.storage)
@@ -480,10 +488,14 @@ def _assemble_runtime_bundle(
     sessions._on_evict = on_session_evict
     sessions.idle_ttl = config.session_pool.idle_ttl_s
     for srv in config.upstream_servers:
-        adapter = _wrap_cache(_build_adapter(srv), config.cache)
+        adapter = _wrap_cache(
+            _build_adapter(srv, auth_header_provider=auth_header_provider), config.cache
+        )
 
         def adapter_factory(s: UpstreamServerConfig = srv) -> UpstreamAdapter:
-            return _wrap_cache(_build_adapter(s), config.cache)
+            return _wrap_cache(
+                _build_adapter(s, auth_header_provider=auth_header_provider), config.cache
+            )
 
         adapters.register(
             adapter,
@@ -555,28 +567,39 @@ def _assemble_runtime_bundle(
     )
 
 
+def _build_oauth_service(audit: AuditLogger) -> UpstreamOAuthService:
+    """Construct the shared upstream OAuth service + encrypted credential store.
+
+    The same instance backs both the ``/admin/oauth/*`` routes (mint/refresh) and
+    the adapter-side :class:`OAuthAuthHeaderProvider` (token injection), so a
+    token saved by the flow is immediately visible to upstream requests.
+    """
+    key_material = os.environ.get("CONCIERGE_CREDENTIAL_KEY", "concierge-dev-credential-key")
+    backend = InMemoryCredentialStore(key=resolve_fernet_key(key_material))
+    credentials = UpstreamCredentialStore(backend=backend)
+    return UpstreamOAuthService(
+        credential_store=credentials,
+        pending=OAuthPendingStore(),
+        audit=audit,
+    )
+
+
 def _build_oauth_deps(
     *,
     auth: AuthProvider,
     audit: AuditLogger,
     config: GatewayConfig,
+    oauth: UpstreamOAuthService | None = None,
 ) -> AdminOAuthDeps:
     """Wire upstream OAuth admin routes (P2-ADMIN-7) for the running gateway."""
-    key_material = os.environ.get("CONCIERGE_CREDENTIAL_KEY", "concierge-dev-credential-key")
-    backend = InMemoryCredentialStore(key=resolve_fernet_key(key_material))
-    credentials = UpstreamCredentialStore(backend=backend)
-    oauth = UpstreamOAuthService(
-        credential_store=credentials,
-        pending=OAuthPendingStore(),
-        audit=audit,
-    )
+    oauth = oauth or _build_oauth_service(audit)
     gw = config.gateway
     host = gw.host if gw.host not in ("0.0.0.0", "::") else "127.0.0.1"  # nosec B104
     public_base_url = f"http://{host}:{gw.port}"
     return AdminOAuthDeps(
         auth=auth,
         oauth=oauth,
-        credentials=credentials,
+        credentials=oauth.credentials,
         audit=audit,
         public_base_url=public_base_url,
     )
@@ -689,6 +712,12 @@ def build_app(config: GatewayConfig) -> FastAPI:
         ))
     audit = AuditLogger(sinks=audit_sinks)
 
+    # Shared upstream OAuth service: backs both the admin OAuth routes and the
+    # adapter-side token injection so a token minted via the flow is sent on
+    # upstream requests (and refreshed on expiry).
+    oauth_service = _build_oauth_service(audit)
+    auth_header_provider = OAuthAuthHeaderProvider(oauth_service)
+
     adapters = AdapterManager(
         catalog,
         refresh_interval_s=config.catalog_refresh_interval_s,
@@ -706,10 +735,14 @@ def build_app(config: GatewayConfig) -> FastAPI:
     sessions._on_evict = _on_session_evict
     sessions.idle_ttl = config.session_pool.idle_ttl_s
     for srv in config.upstream_servers:
-        adapter = _wrap_cache(_build_adapter(srv), config.cache)
+        adapter = _wrap_cache(
+            _build_adapter(srv, auth_header_provider=auth_header_provider), config.cache
+        )
 
         def adapter_factory(s: UpstreamServerConfig = srv) -> UpstreamAdapter:
-            return _wrap_cache(_build_adapter(s), config.cache)
+            return _wrap_cache(
+                _build_adapter(s, auth_header_provider=auth_header_provider), config.cache
+            )
 
         adapters.register(
             adapter,
@@ -945,6 +978,7 @@ def build_app(config: GatewayConfig) -> FastAPI:
             audit=audit,
             metrics=metrics,
             on_session_evict=_on_session_evict,
+            auth_header_provider=auth_header_provider,
         )
 
     reload_coordinator = ReloadCoordinator(
@@ -968,7 +1002,7 @@ def build_app(config: GatewayConfig) -> FastAPI:
             reload_coordinator=reload_coordinator,
         )
     )
-    oauth_deps = _build_oauth_deps(auth=auth, audit=audit, config=config)
+    oauth_deps = _build_oauth_deps(auth=auth, audit=audit, config=config, oauth=oauth_service)
     _include_admin_routers(
         app,
         auth=auth,
