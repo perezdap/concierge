@@ -71,7 +71,9 @@ class AdminOAuthDeps:
     public_base_url: str = "http://127.0.0.1:8765"
 
 
-async def _resolve_sign_in(deps: AdminOAuthDeps, body: SignInStartRequest) -> _ResolvedSignIn:
+async def _resolve_sign_in(
+    deps: AdminOAuthDeps, body: SignInStartRequest, *, upstream_id: str
+) -> _ResolvedSignIn:
     """Resolve a sign-in request into concrete endpoints/scopes/credentials.
 
     Three modes (see :class:`SignInStartRequest` for priority):
@@ -83,7 +85,7 @@ async def _resolve_sign_in(deps: AdminOAuthDeps, body: SignInStartRequest) -> _R
         f"{deps.public_base_url.rstrip('/')}/admin/oauth/callback"
     )
     if body.resource_url:
-        return await _resolve_dcr(deps, body, redirect_uri=redirect_uri)
+        return await _resolve_dcr(deps, body, upstream_id=upstream_id, redirect_uri=redirect_uri)
     if body.provider:
         preset = get_provider(body.provider)
         if preset is None:
@@ -132,7 +134,7 @@ async def _resolve_sign_in(deps: AdminOAuthDeps, body: SignInStartRequest) -> _R
 
 
 async def _resolve_dcr(
-    deps: AdminOAuthDeps, body: SignInStartRequest, *, redirect_uri: str
+    deps: AdminOAuthDeps, body: SignInStartRequest, *, upstream_id: str, redirect_uri: str
 ) -> _ResolvedSignIn:
     """Zero-config resolution for a spec-compliant remote MCP server.
 
@@ -160,10 +162,23 @@ async def _resolve_dcr(
                 "Registration. Use a provider preset or supply client_id."
             ),
         )
-    client_id, client_secret = await deps.oauth.register_client(
-        registration_endpoint=discovery.registration_endpoint,
-        redirect_uri=redirect_uri,
-    )
+    # Reuse a previously-registered client for this (upstream, issuer) rather
+    # than registering a fresh one on every Connect — repeated sign-ins would
+    # otherwise accumulate orphaned client registrations on the auth server.
+    existing = await deps.credentials.load_client_registration(upstream_id, discovery.issuer)
+    if existing is not None:
+        client_id, client_secret = existing
+    else:
+        client_id, client_secret = await deps.oauth.register_client(
+            registration_endpoint=discovery.registration_endpoint,
+            redirect_uri=redirect_uri,
+        )
+        await deps.credentials.save_client_registration(
+            upstream_id,
+            discovery.issuer,
+            client_id=client_id,
+            client_secret=client_secret,
+        )
     return _ResolvedSignIn(
         discovery=discovery,
         client_id=client_id,
@@ -270,7 +285,7 @@ def build_admin_oauth_router(deps: AdminOAuthDeps) -> APIRouter:
     ) -> dict[str, str]:
         redirect = body.redirect_uri or f"{deps.public_base_url.rstrip('/')}/admin/oauth/callback"
         try:
-            params = await _resolve_sign_in(deps, body)
+            params = await _resolve_sign_in(deps, body, upstream_id=upstream_id)
             auth_url, state = deps.oauth.begin_authorization_code(
                 upstream_id=upstream_id,
                 discovery=params.discovery,

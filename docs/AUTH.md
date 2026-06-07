@@ -122,7 +122,11 @@ clicking **Connect** in the admin console does the whole dance automatically:
    `401` with a `WWW-Authenticate: ... resource_metadata="..."` header. Concierge
    fetches that Protected Resource Metadata document to learn the upstream's
    authorization server(s). (Falls back to the well-known
-   `/.well-known/oauth-protected-resource` path if the header is absent.)
+   `/.well-known/oauth-protected-resource` path if the header is absent.) The
+   `resource_metadata` URL is attacker-controlled, so Concierge only follows it
+   when it is **same-origin** with the upstream (RFC 9728 serves the PRM document
+   from the resource's own origin); a cross-origin pointer is ignored in favour
+   of the well-known path, and redirects are not followed — both SSRF guards.
 2. **Discover (RFC 8414 / OIDC).** Concierge fetches the authorization server
    metadata (`/.well-known/oauth-authorization-server`, then
    `/.well-known/openid-configuration`) to find the authorization/token/registration
@@ -130,7 +134,10 @@ clicking **Connect** in the admin console does the whole dance automatically:
 3. **Register (RFC 7591).** If the AS advertises a `registration_endpoint`,
    Concierge dynamically registers itself as a **public, native** client
    (`token_endpoint_auth_method: none`) — obtaining a `client_id` with no
-   pre-shared secret and no human in the loop.
+   pre-shared secret and no human in the loop. The registered `client_id` is
+   persisted per `(upstream, authorization-server)` and reused on subsequent
+   Connects, so repeated sign-ins don't accumulate orphaned registrations on the
+   authorization server.
 4. **Sign in (PKCE).** The browser popup completes authorization-code + PKCE; the
    token (and refresh token) are stored and auto-refreshed like any other.
 

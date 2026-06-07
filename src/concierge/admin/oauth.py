@@ -105,6 +105,24 @@ def _origin_of(url: str) -> str:
     return f"{parsed.scheme}://{parsed.netloc}"
 
 
+_DEFAULT_PORTS = {"http": 80, "https": 443}
+
+
+def _same_origin(a: str, b: str) -> bool:
+    """True when ``a`` and ``b`` share scheme, host, and (normalized) port.
+
+    An explicit default port (``:443`` for https, ``:80`` for http) is treated
+    as equal to an omitted one.
+    """
+
+    def _origin(url: str) -> tuple[str, str | None, int | None]:
+        p = urlsplit(url)
+        port = p.port if p.port is not None else _DEFAULT_PORTS.get(p.scheme)
+        return (p.scheme, p.hostname, port)
+
+    return _origin(a) == _origin(b)
+
+
 def _b64url(data: bytes) -> str:
     return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
 
@@ -157,7 +175,10 @@ class UpstreamOAuthService:
     async def _client(self) -> httpx.AsyncClient:
         if self._http is not None:
             return self._http
-        return httpx.AsyncClient(timeout=10.0)
+        # follow_redirects=False is httpx's default, set explicitly here as an
+        # SSRF guard: discovery/probe/registration fetch attacker-influenced
+        # URLs, and we must not let a redirect bounce them at internal hosts.
+        return httpx.AsyncClient(timeout=10.0, follow_redirects=False)
 
     async def discover(self, issuer: str) -> OAuthDiscoveryDocument:
         url = issuer.rstrip("/") + "/.well-known/openid-configuration"
@@ -242,7 +263,14 @@ class UpstreamOAuthService:
             resp = await client.get(resource_url)
             prm_url: str | None = None
             if resp.status_code == 401:
-                prm_url = _parse_resource_metadata_url(resp.headers.get("WWW-Authenticate", ""))
+                candidate = _parse_resource_metadata_url(resp.headers.get("WWW-Authenticate", ""))
+                # SSRF guard: the resource_metadata URL is attacker-controlled
+                # (an upstream response header). RFC 9728 requires the PRM
+                # document to live on the protected resource's own origin, so a
+                # cross-origin pointer is illegitimate — ignore it and fall back
+                # to the well-known path rather than fetching an arbitrary host.
+                if candidate and _same_origin(candidate, resource_url):
+                    prm_url = candidate
             if prm_url is None:
                 # Fall back to the well-known PRM path on the resource origin.
                 origin = _origin_of(resource_url)

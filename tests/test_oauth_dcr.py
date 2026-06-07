@@ -22,6 +22,7 @@ from concierge.admin.oauth import (
     OAuthPendingStore,
     UpstreamOAuthService,
     _parse_resource_metadata_url,
+    _same_origin,
 )
 from concierge.admin.secrets import InMemoryCredentialStore, resolve_fernet_key
 from concierge.server.admin_oauth import AdminOAuthDeps, build_admin_oauth_router
@@ -130,6 +131,67 @@ def test_parse_resource_metadata_url():
         == "https://x.test/.well-known/oauth-protected-resource"
     )
     assert _parse_resource_metadata_url("Bearer") is None
+
+
+def test_same_origin():
+    assert _same_origin("https://mcp.test/a", "https://mcp.test/b/c")
+    assert _same_origin("https://mcp.test:443/a", "https://mcp.test/b")  # default port
+    assert not _same_origin("https://mcp.test/a", "https://evil.test/a")  # host
+    assert not _same_origin("http://mcp.test/a", "https://mcp.test/a")  # scheme
+    assert not _same_origin("https://mcp.test:8443/a", "https://mcp.test/a")  # port
+
+
+@pytest.mark.asyncio
+async def test_probe_ignores_cross_origin_resource_metadata_header():
+    """SSRF guard: a cross-origin resource_metadata pointer must not be fetched.
+
+    RFC 9728 puts the PRM document on the resource's own origin, so a header
+    pointing elsewhere is illegitimate — we fall back to the well-known path on
+    the resource origin instead of fetching the attacker-supplied URL.
+    """
+    evil_hits: list[str] = []
+
+    async def resource(_req: Request) -> Response:
+        # 401 header points the PRM at a *different* origin (attacker-controlled).
+        return Response(
+            status_code=401,
+            headers={"WWW-Authenticate": 'Bearer resource_metadata="https://evil.test/prm"'},
+        )
+
+    async def evil_prm(_req: Request) -> JSONResponse:
+        evil_hits.append("hit")
+        return JSONResponse({"authorization_servers": ["https://evil.test/as"]})
+
+    async def prm(_req: Request) -> JSONResponse:
+        return JSONResponse({"resource": _RESOURCE, "authorization_servers": [_AS]})
+
+    app = Starlette(
+        routes=[
+            Route("/mcp", resource, methods=["GET"]),
+            Route("/prm", evil_prm, methods=["GET"]),
+            Route("/.well-known/oauth-protected-resource", prm, methods=["GET"]),
+        ]
+    )
+    svc = _svc(httpx.ASGITransport(app=app))
+    servers = await svc.probe_resource_metadata(_RESOURCE)
+    # Fell back to the legit well-known PRM; never fetched the evil URL.
+    assert servers == [_AS]
+    assert evil_hits == []
+
+
+def test_dcr_reuses_registered_client_across_sign_ins():
+    """Repeated Connect clicks reuse one client_id instead of re-registering."""
+    app = _fake_mcp_stack()
+    client = _client(_svc(httpx.ASGITransport(app=app)))
+    first = client.post("/admin/oauth/srv/sign-in/start", json={"resource_url": _RESOURCE})
+    second = client.post("/admin/oauth/srv/sign-in/start", json={"resource_url": _RESOURCE})
+    assert first.status_code == 200
+    assert second.status_code == 200
+    # Registration endpoint hit exactly once across both sign-ins.
+    assert len(app.state.registered) == 1
+    first_cid = parse_qs(urlparse(first.json()["authorization_url"]).query)["client_id"]
+    second_cid = parse_qs(urlparse(second.json()["authorization_url"]).query)["client_id"]
+    assert first_cid == second_cid == ["dcr-generated-client"]
 
 
 @pytest.mark.asyncio

@@ -83,6 +83,11 @@ class UpstreamCredentialStore:
     def __init__(self, backend: EncryptedCredentialStore | None = None) -> None:
         self._backend = backend or InMemoryCredentialStore()
         self._upstream_refs: dict[str, str] = {}
+        # Dynamically-registered (RFC 7591) OAuth clients, keyed by
+        # (upstream_id, authorization-server issuer). Persisted so repeated
+        # "Connect" clicks reuse one client_id instead of registering a new one
+        # with the authorization server every time.
+        self._registration_refs: dict[str, str] = {}
 
     async def save_tokens(self, upstream_id: str, tokens: OAuthTokenSet) -> str:
         ref = self._upstream_refs.get(upstream_id)
@@ -105,6 +110,45 @@ class UpstreamCredentialStore:
         ref = self._upstream_refs.pop(upstream_id, None)
         if ref:
             await self._backend.delete(ref)
+
+    @staticmethod
+    def _registration_key(upstream_id: str, issuer: str) -> str:
+        return f"{upstream_id}\x00{issuer}"
+
+    async def save_client_registration(
+        self,
+        upstream_id: str,
+        issuer: str,
+        *,
+        client_id: str,
+        client_secret: str | None,
+    ) -> None:
+        """Persist a dynamically-registered client for (upstream, issuer)."""
+        key = self._registration_key(upstream_id, issuer)
+        ref = self._registration_refs.get(key)
+        cred_id = parse_secret_ref(ref) if ref else new_credential_id()
+        ref = await self._backend.store(
+            credential_id=cred_id,
+            payload={"client_id": client_id, "client_secret": client_secret, "issuer": issuer},
+        )
+        self._registration_refs[key] = ref
+
+    async def load_client_registration(
+        self, upstream_id: str, issuer: str
+    ) -> tuple[str, str | None] | None:
+        """Return ``(client_id, client_secret)`` for a prior DCR, if any."""
+        ref = self._registration_refs.get(self._registration_key(upstream_id, issuer))
+        if not ref:
+            return None
+        try:
+            payload = await self._backend.retrieve(ref)
+        except KeyError:
+            return None
+        client_id = payload.get("client_id")
+        if not client_id:
+            return None
+        secret = payload.get("client_secret")
+        return str(client_id), (str(secret) if secret else None)
 
     def get_secret_ref(self, upstream_id: str) -> str | None:
         return self._upstream_refs.get(upstream_id)
