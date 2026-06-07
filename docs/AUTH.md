@@ -96,6 +96,50 @@ auth:
 Requires the `auth` extra (`pyjwt[crypto]`): `uv sync --extra auth` (or it is
 already present in the published image / `requirements.txt`).
 
+> **Direction.** This `oidc` provider is **inbound**: it authenticates *callers*
+> of the gateway. Authenticating the gateway *to an upstream* MCP server is the
+> opposite direction — see [Upstream OAuth (outbound)](#upstream-oauth-outbound).
+
+---
+
+## Upstream OAuth (outbound)
+
+The inbound providers above verify who is calling Concierge. Separately,
+Concierge can act as an **OAuth client** to authenticate itself to an upstream
+MCP server, using the admin OAuth flows (`/admin/oauth/*`, see
+[ADMIN_CONSOLE.md](ADMIN_CONSOLE.md)): OIDC discovery, authorization-code + PKCE,
+and client-credentials. The resulting token set is stored encrypted in the
+`UpstreamCredentialStore`.
+
+**Token injection + refresh.** Tokens minted via those flows are injected into
+upstream requests automatically. For each `streamable_http` / `sse_legacy`
+upstream, the adapter consults an `OAuthAuthHeaderProvider` before every request:
+
+- The credential is keyed by the upstream **server id** (`upstream_servers[].id`)
+  — connect an upstream via the OAuth flow under that same id.
+- If a non-expired token exists, an `Authorization: <token_type> <access_token>`
+  header is merged over the upstream's static `headers:` (the dynamic token
+  **wins** on conflict).
+- If the token is expired and a `refresh_token` is present, it is refreshed
+  in-place (using the `token_endpoint` / `client_id` / `client_secret` persisted
+  on the stored token set) before the request goes out.
+- If no credential is stored — or a refresh fails — **no** `Authorization`
+  header is added and the request proceeds with the static config headers only.
+  This keeps the static-token path (e.g. a GitHub PAT in `headers:`) unchanged.
+
+This means there are two supported ways to authenticate an upstream:
+
+1. **Static header** — reference the secret from `upstream_servers[].headers`
+   via an env/secret placeholder rather than pasting the raw token
+   (`Authorization: "Bearer ${TOKEN}"`, with `TOKEN` supplied from the
+   environment or your secret store). Simplest; no refresh. Avoid committing
+   literal token bytes to config files.
+2. **Admin OAuth flow** — connect the upstream via `/admin/oauth/{id}/...`; the
+   token is stored, injected, and refreshed automatically.
+
+Raw tokens are never logged; only opaque ids / salted digests appear in audit
+events (`admin.oauth.*`).
+
 ---
 
 ## mTLS pass-through (`mtls`)

@@ -16,7 +16,7 @@ import asyncio
 import json
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import httpx
 
@@ -29,6 +29,9 @@ from ..errors import (
 from ..util.log import get_logger
 from ._jsonrpc import build_notification, build_request, unwrap_result
 from .base import UpstreamAdapter
+
+if TYPE_CHECKING:
+    from .auth_headers import AuthHeaderProvider
 
 _log = get_logger("concierge.adapter.streamable_http")
 
@@ -44,12 +47,14 @@ class StreamableHttpAdapter(UpstreamAdapter):
         headers: dict[str, str] | None = None,
         request_timeout_s: float = 30.0,
         listen_for_notifications: bool = True,
+        auth_header_provider: AuthHeaderProvider | None = None,
     ) -> None:
         self.server_id = server_id
         self.url = url
         self.base_headers = headers or {}
         self.request_timeout_s = request_timeout_s
         self.listen_for_notifications = listen_for_notifications
+        self._auth_header_provider = auth_header_provider
 
         self._client: httpx.AsyncClient | None = None
         self._session_id: str | None = None
@@ -86,12 +91,20 @@ class StreamableHttpAdapter(UpstreamAdapter):
             h["MCP-Session-Id"] = self._session_id
         return h
 
+    async def _request_headers(self) -> dict[str, str]:
+        """Static headers plus dynamic auth headers (auth wins on conflict)."""
+        h = self._headers()
+        if self._auth_header_provider is not None:
+            h.update(await self._auth_header_provider.headers(self.server_id))
+        return h
+
     async def _post(self, method: str, params: dict[str, Any] | None = None) -> Any:
         if not self._connected or not self._client:
             raise UpstreamUnavailable(self.server_id)
         req = build_request(method, params)
         try:
-            resp = await self._client.post(self.url, json=req, headers=self._headers())
+            headers = await self._request_headers()
+            resp = await self._client.post(self.url, json=req, headers=headers)
         except httpx.TimeoutException:
             self._failures += 1
             raise UpstreamTimeout(f"{self.server_id}.{method}")
@@ -157,7 +170,7 @@ class StreamableHttpAdapter(UpstreamAdapter):
         try:
             await self._client.post(
                 self.url, json=build_notification(method, params),
-                headers=self._headers(),
+                headers=await self._request_headers(),
             )
         except httpx.HTTPError:
             self._connected = False
@@ -174,7 +187,8 @@ class StreamableHttpAdapter(UpstreamAdapter):
         if client is None:
             return
         try:
-            async with client.stream("GET", self.url, headers=self._headers()) as resp:
+            req_headers = await self._request_headers()
+            async with client.stream("GET", self.url, headers=req_headers) as resp:
                 if resp.status_code >= 400:
                     return
                 async for payload in self._iter_sse_data(resp):

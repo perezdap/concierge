@@ -375,6 +375,50 @@ class UpstreamOAuthService:
             )
         return refreshed.access_token
 
+    async def valid_token_set(self, upstream_id: str) -> OAuthTokenSet | None:
+        """Return a non-expired token set for ``upstream_id``, refreshing if needed.
+
+        Self-contained: the endpoint and client credentials needed to refresh are
+        read from the stored :class:`OAuthTokenSet` (persisted at mint time), so
+        callers only supply the upstream id. Returns ``None`` when no credential
+        is stored. Raises only when a token is expired and cannot be refreshed.
+        """
+        current = await self.credentials.load_tokens(upstream_id)
+        if current is None:
+            return None
+        if not current.is_expired():
+            return current
+        # client-credentials grants typically have no refresh_token; the correct
+        # "refresh" is to re-run the client-credentials exchange with the stored
+        # endpoint/client credentials.
+        if current.flow == "client_credentials":
+            if not current.token_endpoint or not current.client_id or not current.client_secret:
+                raise ValueError(
+                    "client-credentials token expired and cannot be re-minted "
+                    "(missing token_endpoint, client_id, or client_secret in stored credentials)"
+                )
+            return await self.client_credentials(
+                upstream_id=upstream_id,
+                token_endpoint=current.token_endpoint,
+                client_id=current.client_id,
+                client_secret=current.client_secret,
+                scopes=current.scope or "",
+                issuer=current.issuer,
+                revocation_endpoint=current.revocation_endpoint,
+            )
+        if not current.refresh_token or not current.token_endpoint or not current.client_id:
+            raise ValueError(
+                "access token expired and cannot be refreshed (missing refresh_token, "
+                "token_endpoint, or client_id in stored credentials)"
+            )
+        await self.refresh_if_needed(
+            upstream_id,
+            token_endpoint=current.token_endpoint,
+            client_id=current.client_id,
+            client_secret=current.client_secret,
+        )
+        return await self.credentials.load_tokens(upstream_id)
+
     async def _revoke_at_provider(
         self,
         tokens: OAuthTokenSet,
