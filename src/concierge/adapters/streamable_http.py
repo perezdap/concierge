@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
@@ -118,6 +119,18 @@ class StreamableHttpAdapter(UpstreamAdapter):
         if sid and not self._session_id:
             self._session_id = sid
 
+        # Surface HTTP-level failures with the upstream's own message instead of
+        # blindly parsing the body as JSON. A 401/403 from a protected MCP server
+        # is typically a plain-text body, which would otherwise raise a misleading
+        # "non-JSON response" error and hide the real (auth) cause.
+        if resp.status_code >= 400:
+            self._failures += 1
+            detail = self._describe_http_error(resp)
+            self._last_error = detail
+            if resp.status_code in (401, 403):
+                self._connected = False
+            raise UpstreamUnavailable(f"{self.server_id}.{method}: {detail}")
+
         ctype = resp.headers.get("Content-Type", "")
         if "text/event-stream" in ctype:
             # The response is a single-request SSE — find the first message.
@@ -128,6 +141,28 @@ class StreamableHttpAdapter(UpstreamAdapter):
             except ValueError as e:
                 raise UpstreamProtocolError(f"non-JSON response: {e}")
         return unwrap_result(payload)
+
+    @staticmethod
+    def _describe_http_error(resp: httpx.Response) -> str:
+        """Build a concise, non-leaking description of an HTTP error response.
+
+        Includes the status code and a short snippet of the upstream's body so
+        auth failures (e.g. ``401 missing/invalid token``) are diagnosable. The
+        body is truncated and the WWW-Authenticate ``error_description`` is
+        preferred when present (RFC 6750).
+        """
+        www_auth = resp.headers.get("WWW-Authenticate", "")
+        match = re.search(r'error_description="([^"]+)"', www_auth)
+        if match:
+            hint = match.group(1)
+        else:
+            try:
+                body = resp.text.strip()
+            except Exception:  # noqa: BLE001
+                body = ""
+            hint = body[:200] if body else resp.reason_phrase or ""
+        prefix = f"HTTP {resp.status_code}"
+        return f"{prefix}: {hint}" if hint else prefix
 
     @staticmethod
     async def _iter_sse_data(resp: httpx.Response) -> AsyncIterator[str]:
