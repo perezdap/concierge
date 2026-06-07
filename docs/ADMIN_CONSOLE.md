@@ -1,7 +1,9 @@
 # Admin Console
 
-> Quick start: see [README.md](../README.md#admin-console) for the shortest path
-> to running the admin UI locally or in Docker.
+> **Operator walkthrough:** [`GETTING_STARTED.md`](GETTING_STARTED.md) — boot,
+> draft/apply, upstreams, profiles, persistence, MCP client checks.
+>
+> Quick start: [README.md](../README.md#admin-console) for install commands.
 
 Browser UI for operating a Concierge gateway: health, upstream status, catalog
 counts, sessions, and runtime config version. It also ships two config editor
@@ -20,7 +22,7 @@ Served under `/admin/` as a Vite-built React SPA.
 1. Start the gateway (localhost auth example):
 
    ```powershell
-   .venv\Scripts\concierge.exe --config config\minimal.yaml
+   .venv\Scripts\concierge.exe --config config\starter.yaml
    ```
 
 2. Install and run the admin dev server (proxies API to `:8765`):
@@ -47,9 +49,12 @@ Toggle mode from the header bar. Do not paste production secrets into shared mac
 
 The **Upstreams** and **Profiles** pages edit the runtime config *draft*. Nothing
 you change here is live until you apply the draft from the **Pending changes**
-banner (it appears across the admin app whenever the draft differs from the
-active config). The source of truth for the fields below is
-`frontend/src/pages/Upstreams.tsx` and `frontend/src/pages/Profiles.tsx`.
+card on those pages (**Apply (no restart)** promotes the draft and reloads
+adapters in-process). **Rollback config** reverts to the previous active version.
+
+Numbered workflow: [`GETTING_STARTED.md`](GETTING_STARTED.md#step-by-step-configure-everything-in-the-ui).
+Field reference below mirrors `frontend/src/pages/Upstreams.tsx` and
+`frontend/src/pages/Profiles.tsx`.
 
 ### Mental model
 

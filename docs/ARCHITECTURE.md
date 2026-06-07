@@ -208,8 +208,12 @@ needing to react to the dynamic-publish notification.
 
 Admin-panel changes (upstreams, profiles, policy, payload settings) are stored
 in a SQLite file (`concierge-runtime-config.db` by default, or
-`storage.catalog_sqlite_path` when set). On restart, `build_app()` opens the
-store before registering any adapters and calls `overlay_dynamic_from_store()`:
+`storage.catalog_sqlite_path` when set). Docker Compose mounts `./data` and
+`starter.docker.yaml` points the store at `/app/data/concierge-runtime-config.db`
+so admin state survives container removal; see
+[`GETTING_STARTED.md`](GETTING_STARTED.md#persistence). On restart, `build_app()`
+opens the store before registering any adapters and calls
+`overlay_dynamic_from_store()`:
 
 ```
 stored_config  ──(dynamic fields only)──▶ │

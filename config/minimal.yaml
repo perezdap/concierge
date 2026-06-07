@@ -1,32 +1,25 @@
-# Minimal Concierge configuration for quick testing.
-# This config works out of the box with no environment variables required.
+# Echo-server demo — quick smoke test with one built-in upstream (local Python only).
 #
 # Usage:
-#   docker compose up --build
-#   OR
 #   python -m concierge --config config/minimal.yaml
+#
+# For admin-panel-first local dev, use config/starter.yaml.
+# For Docker, use config/starter.docker.yaml (docker compose uses it by default).
 
 gateway:
   host: 127.0.0.1
   port: 8765
-  bind_public: false
-  path: /mcp
-  allowed_origins:
-    - http://localhost
-    - http://127.0.0.1
 
 auth:
   type: localhost
 
 log_level: INFO
 
-# Minimal session settings
 session_pool:
   idle_ttl_s: 3600
   gc_interval_s: 60
   max_upstream_sessions: 64
 
-# Lightweight payload settings
 payload:
   slim_tools_list: true
   max_schema_description_chars: 120
@@ -37,7 +30,6 @@ policy:
   rate_limit_refill_per_sec: 1.0
   block_dangerous_without_approval: false
 
-# Only the built-in echo server — no external dependencies
 upstream_servers:
   - id: echo
     transport: stdio

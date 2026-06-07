@@ -69,7 +69,7 @@ Concierge also ships a browser admin UI — see [Admin Console](#admin-console) 
 - Startup crash → check the logs for empty `${VAR}` warnings; fill the named variable in `.env`.
 - `401 Unauthorized` in the browser → confirm the token pasted into the admin SPA matches `GATEWAY_TOKEN` in `.env`.
 
-> **Tip**: Use `config/minimal.yaml` for the simplest possible setup (only the echo server, no environment variables required).
+> **Config cheat sheet**: `config/starter.yaml` (local Python, no token), `config/starter.docker.yaml` (Docker, bearer token from `.env`), `config/minimal.yaml` (local echo-server smoke test).
 
 ## Local Development Setup
 
@@ -123,7 +123,7 @@ can spin up, reconfigure, and roll the gateway **without rebuilding the image
 or editing the compose file**. Secrets stay in `.env` (gitignored), config
 lives in `config/`, and the compose file just wires the two together.
 
-**Out of the box** — uses `config/minimal.yaml` (localhost auth, no env vars required):
+**Out of the box** — uses `config/starter.docker.yaml` (bearer auth; `init` writes `GATEWAY_TOKEN` to `.env`):
 
 ```bash
 docker compose up --build
@@ -170,9 +170,12 @@ python -m concierge init
 #    http://localhost:8765/admin
 ```
 
-Add upstreams and profiles in the UI. Click **Apply** to reload the gateway
-live without restarting. Changes persist across process restarts — see
-[Persistence](#persistence) below.
+Add upstreams and profiles in the UI. Click **Apply (no restart)** on the
+**Pending changes** card to reload the gateway live. Changes persist across
+restarts — see [Persistence](#persistence) below.
+
+**Full walkthrough** (draft → apply → profiles → MCP client):
+[`docs/GETTING_STARTED.md`](docs/GETTING_STARTED.md).
 
 When you're ready to expose the gateway beyond localhost, switch to bearer auth
 in `starter.yaml`:
@@ -187,25 +190,34 @@ The admin UI detects the 401 and prompts for the token once per browser session.
 
 ### Persistence
 
-Admin-panel changes are stored in `concierge-runtime-config.db` (SQLite, same
-directory as the process). On the next restart, the gateway restores the
-following fields from that store:
+Admin-panel changes are stored in SQLite (`concierge-runtime-config.db`), not
+written back to your starter YAML. On restart, the gateway merges store + YAML
+(see [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) §14).
 
 | Restored from store | Always read from YAML |
 |---|---|
 | `upstream_servers` | `auth` |
 | `profiles` | `gateway` (host/port/origins) |
-| `policy` | `storage` |
+| `policy` | `storage` (backend URLs) |
 | `payload` | `log_level` |
 | `session_pool` | `cache`, `output`, `observability` |
+| `catalog_refresh_interval_s` | |
 
-This means you can freely edit auth and gateway settings in the YAML and
-restart without losing your upstreams and profiles.
+**Local** (`starter.yaml`): database file in the process working directory
+(gitignored).
+
+**Docker** (`starter.docker.yaml`): `./data/concierge-runtime-config.db` on the
+host via the `./data:/app/data` compose volume — survives `docker compose down`
+and container recreate. Without that mount, admin state lived on the container
+writable layer and was lost when the container was removed.
+
+Backup, reset, and the step-by-step UI workflow:
+[`docs/GETTING_STARTED.md`](docs/GETTING_STARTED.md#persistence).
 
 ### Local development (Vite dev server)
 
 Run the gateway and the Vite dev server in two terminals. With
-`auth.type: localhost` (as in `config/minimal.yaml` or `config/starter.yaml`),
+`auth.type: localhost` (as in `config/starter.yaml`),
 loopback access needs no bearer token.
 
 **Terminal 1 — gateway:**
@@ -244,7 +256,8 @@ For non-loopback hosts, set `auth.type: bearer` in config and provide
 automatically prompts for the token once per browser session; the token is
 stored in `sessionStorage` and sent on subsequent API requests.
 
-Full reference: [`docs/ADMIN_CONSOLE.md`](docs/ADMIN_CONSOLE.md).
+- Walkthrough: [`docs/GETTING_STARTED.md`](docs/GETTING_STARTED.md)
+- Field reference: [`docs/ADMIN_CONSOLE.md`](docs/ADMIN_CONSOLE.md)
 
 ## Demo (no client required)
 

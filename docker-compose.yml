@@ -9,8 +9,8 @@
 # Operators override *everything* per environment without editing this file or
 # rebuilding the image:
 #
-#   1. config — the gateway YAML. The default below (gateway.example.yaml,
-#      the comprehensive committed example) works with zero setup. To use
+#   1. config — the gateway YAML. The default below (starter.docker.yaml,
+#      the minimal admin-first Docker config) works with zero setup. To use
 #      your own config without rebuilding the image:
 #
 #        cp config/gateway.example.yaml config/gateway.yaml   # gitignored
@@ -29,9 +29,10 @@
 #      Variables not in .env are simply not exported; ${VAR:-default} in the
 #      YAML supplies a fallback.
 #
-#   3. volumes: ./config:/app/config:ro — bind-mounts local config/ read-only
-#      so operator edits to gateway.yaml (or any other file in there) take
-#      effect on `docker compose up --force-recreate` with NO image rebuild.
+#   3. volumes:
+#        ./config:/app/config:ro  — operator YAML edits without rebuild
+#        ./data:/app/data         — admin runtime config SQLite (survives
+#                                   container recreate; see docs/GETTING_STARTED.md)
 #
 # Secrets NEVER live in this file or in the image. See docs/DEPLOYMENT.md
 # ("Twelve-Factor compose") for the full workflow.
@@ -64,7 +65,7 @@ services:
     # files. To switch configs without editing this file, drop a
     # docker-compose.override.yml in the same directory that sets a different
     # `command:` — the example here is just the default.
-    command: ["--config", "/app/config/minimal.yaml"]
+    command: ["--config", "/app/config/starter.docker.yaml"]
     # Secrets / placeholders come from .env (gitignored). Variables not in
     # .env are simply not exported — ${VAR:-default} in the YAML covers it.
     env_file:
@@ -80,6 +81,7 @@ services:
     # this mount shadows it for the compose path.
     volumes:
       - ./config:/app/config:ro
+      - ./data:/app/data
     # Container healthcheck mirrors the k8s liveness probe (GET /healthz).
     # Readiness (GET /readyz) is consumed by k8s/load balancers; for a local
     # smoke test, curl it manually after the stack reports healthy.

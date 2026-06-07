@@ -1,0 +1,29 @@
+# Starter config for Docker — boot with no upstreams, manage everything via the admin panel.
+#
+# Usage:
+#   docker compose up --build          # init writes GATEWAY_TOKEN to .env on first run
+#   open http://localhost:8765/admin     # paste token from .env when prompted
+#
+# Add upstreams and profiles in the admin panel; click "Apply" to reload live.
+# The YAML file never needs to change — the admin panel writes to the runtime
+# config store, not back to this file.
+#
+# Local dev without Docker: use config/starter.yaml instead (localhost auth, no token).
+#
+# Admin-panel state is stored in ./data/concierge-runtime-config.db (host) via the
+# ./data:/app/data volume in docker-compose.yml.
+
+gateway:
+  host: 0.0.0.0
+  port: 8765
+  bind_public: true
+
+auth:
+  type: bearer
+  bearer_tokens: ["${GATEWAY_TOKEN:-}"]
+
+# Persist admin-panel edits on the host (docker compose mounts ./data → /app/data).
+storage:
+  catalog_sqlite_path: /app/data/concierge-runtime-config.db
+
+log_level: INFO

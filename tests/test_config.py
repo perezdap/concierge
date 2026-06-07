@@ -1,5 +1,7 @@
 """Configuration defaults and validation."""
 
+from pathlib import Path
+
 import pytest
 from pydantic import ValidationError
 
@@ -9,7 +11,10 @@ from concierge.config import (
     ProfileConfig,
     SessionPoolConfig,
     expand_env,
+    load_config,
 )
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 def test_payload_slim_tools_list_is_opt_in_by_default():
@@ -206,3 +211,23 @@ def test_expand_env_empty_error_distinct_from_undefined_error(
         expand_env("a: ${EMPTY}")
     with pytest.raises(ValueError, match="UNSET"):
         expand_env("b: ${UNSET}")
+
+
+def test_starter_yaml_is_localhost_admin_first(monkeypatch: pytest.MonkeyPatch) -> None:
+    cfg = load_config(REPO_ROOT / "config" / "starter.yaml")
+    assert cfg.gateway.host == "127.0.0.1"
+    assert cfg.auth.type == "localhost"
+    assert cfg.upstream_servers == []
+
+
+def test_starter_docker_yaml_binds_public_with_bearer_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("GATEWAY_TOKEN", "test-token")
+    cfg = load_config(REPO_ROOT / "config" / "starter.docker.yaml")
+    assert cfg.gateway.host == "0.0.0.0"
+    assert cfg.gateway.bind_public is True
+    assert cfg.auth.type == "bearer"
+    assert cfg.auth.bearer_tokens == ["test-token"]
+    assert cfg.storage.catalog_sqlite_path == "/app/data/concierge-runtime-config.db"
+    assert cfg.upstream_servers == []
