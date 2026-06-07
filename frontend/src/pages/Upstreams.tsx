@@ -388,7 +388,10 @@ export default function Upstreams() {
               {!isNew &&
               selectedId &&
               (form.transport === "streamable_http" || form.transport === "sse_legacy") ? (
-                <OAuthConnect upstreamId={selectedId} />
+                <OAuthConnect
+                  upstreamId={selectedId}
+                  resourceUrl={form.url ?? form.sse_url ?? null}
+                />
               ) : null}
 
               {refreshMsg ? (

@@ -111,6 +111,39 @@ MCP server, using the admin OAuth flows (`/admin/oauth/*`, see
 and client-credentials. The resulting token set is stored encrypted in the
 `UpstreamCredentialStore`.
 
+### Zero-config connect (Dynamic Client Registration)
+
+The friendliest path needs **no operator setup and no secrets at all**. When the
+upstream is a remote MCP server that implements the
+[MCP authorization spec](https://modelcontextprotocol.io/specification/2025-06-18/basic/authorization),
+clicking **Connect** in the admin console does the whole dance automatically:
+
+1. **Probe (RFC 9728).** An unauthenticated request to the upstream returns
+   `401` with a `WWW-Authenticate: ... resource_metadata="..."` header. Concierge
+   fetches that Protected Resource Metadata document to learn the upstream's
+   authorization server(s). (Falls back to the well-known
+   `/.well-known/oauth-protected-resource` path if the header is absent.)
+2. **Discover (RFC 8414 / OIDC).** Concierge fetches the authorization server
+   metadata (`/.well-known/oauth-authorization-server`, then
+   `/.well-known/openid-configuration`) to find the authorization/token/registration
+   endpoints.
+3. **Register (RFC 7591).** If the AS advertises a `registration_endpoint`,
+   Concierge dynamically registers itself as a **public, native** client
+   (`token_endpoint_auth_method: none`) — obtaining a `client_id` with no
+   pre-shared secret and no human in the loop.
+4. **Sign in (PKCE).** The browser popup completes authorization-code + PKCE; the
+   token (and refresh token) are stored and auto-refreshed like any other.
+
+The admin console probes the upstream on selection (`POST /admin/oauth/{id}/probe`)
+and, when DCR is available, shows a single **Connect** button with no provider
+picker or credential fields. If the upstream's authorization server does not
+support DCR, the console falls back to the provider presets below.
+
+> Why this can't be fully automatic for raw SaaS (GitHub/Google/etc.): those are
+> not MCP servers and do not implement RFC 9728 probing or open RFC 7591
+> registration, so they still require a registered OAuth app (the preset +
+> env-credential path). DCR is specifically for spec-compliant **MCP** upstreams.
+
 **Token injection + refresh.** Tokens minted via those flows are injected into
 upstream requests automatically. For each `streamable_http` / `sse_legacy`
 upstream, the adapter consults an `OAuthAuthHeaderProvider` before every request:

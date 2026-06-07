@@ -69,7 +69,8 @@ concierge/
     ├── test_metrics.py          # audit payload sizes + pool/session lifecycle events
     ├── test_config.py           # config defaults + validation (session_pool/payload)
     ├── test_upstream_auth_injection.py # dynamic OAuth header injection + refresh into adapters
-    └── test_oauth_providers.py  # built-in provider presets + provider-driven sign-in
+    ├── test_oauth_providers.py  # built-in provider presets + provider-driven sign-in
+    └── test_oauth_dcr.py        # zero-config OAuth: probe + discover + dynamic client registration
 ```
 
 ## Configuration knobs
