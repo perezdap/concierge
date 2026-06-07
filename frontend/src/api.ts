@@ -173,6 +173,36 @@ export interface TestConnectionResult {
   error?: string | null;
 }
 
+export interface OAuthProviderInfo {
+  id: string;
+  display_name: string;
+  default_scopes: string;
+  ready: boolean;
+  env_client_id: string;
+  env_client_secret: string;
+}
+
+export interface OAuthStatus {
+  upstream_id: string;
+  connected: boolean;
+  credential?: Record<string, unknown>;
+}
+
+export interface SignInStartResult {
+  authorization_url: string;
+  state: string;
+  redirect_uri: string;
+}
+
+export interface SignInStartRequest {
+  provider?: string;
+  issuer?: string;
+  client_id?: string;
+  scopes?: string;
+  client_secret?: string;
+  redirect_uri?: string;
+}
+
 export interface ProfileSelector {
   server?: string | null;
   tags?: string[];
@@ -278,4 +308,16 @@ export const api = {
     ),
   applyProfilesDraft: () =>
     postJson<{ version_id: string; applied: boolean; reloaded: boolean }>("/admin/profiles/apply"),
+
+  // --- Upstream OAuth (outbound) ---
+  listOAuthProviders: () =>
+    request<{ providers: OAuthProviderInfo[] }>("/admin/oauth/providers"),
+  oauthStatus: (id: string) =>
+    request<OAuthStatus>(`/admin/oauth/${encodeURIComponent(id)}/status`),
+  oauthSignInStart: (id: string, body: SignInStartRequest) =>
+    postJson<SignInStartResult>(`/admin/oauth/${encodeURIComponent(id)}/sign-in/start`, body),
+  oauthDisconnect: (id: string) =>
+    request<{ status: string; upstream_id: string }>(`/admin/oauth/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+    }),
 };

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { PendingChanges } from "../../components/PendingChanges";
+import { OAuthConnect } from "../../components/OAuthConnect";
 import {
   api,
   ApiError,
@@ -383,6 +384,12 @@ export default function Upstreams() {
                   </button>
                 ) : null}
               </div>
+
+              {!isNew &&
+              selectedId &&
+              (form.transport === "streamable_http" || form.transport === "sse_legacy") ? (
+                <OAuthConnect upstreamId={selectedId} />
+              ) : null}
 
               {refreshMsg ? (
                 <article className="card">

@@ -170,6 +170,7 @@ class UpstreamOAuthService:
         redirect_uri: str,
         scopes: str,
         client_secret: str | None = None,
+        extra_authorize_params: dict[str, str] | None = None,
     ) -> tuple[str, str]:
         state = secrets.token_urlsafe(24)
         verifier = secrets.token_urlsafe(48)
@@ -202,6 +203,12 @@ class UpstreamOAuthService:
             "code_challenge": pkce_challenge(verifier),
             "code_challenge_method": "S256",
         }
+        # Provider-specific quirks (e.g. Google access_type=offline, Atlassian
+        # audience). Never allowed to override the security-critical PKCE/state
+        # params above.
+        if extra_authorize_params:
+            for key, value in extra_authorize_params.items():
+                params.setdefault(key, value)
         auth_url = discovery.authorization_endpoint + "?" + urlencode(params)
         if self.audit:
             self.audit.emit(
