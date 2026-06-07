@@ -53,7 +53,14 @@ class OAuthAuthHeaderProvider:
         except Exception as e:  # noqa: BLE001
             # Refresh failed (e.g. revoked refresh_token). Do not block the
             # request with a stale/invalid header; let the upstream reject it.
-            _log.warning("oauth header injection skipped for %s: %s", server_id, e)
+            # Log only the exception class, never the message: refresh errors
+            # can embed endpoint URLs, response bodies, or credential material
+            # (see docs/AUTH.md "raw tokens are never logged").
+            _log.warning(
+                "oauth header injection skipped for %s: %s",
+                server_id,
+                type(e).__name__,
+            )
             return {}
         if tokens is None:
             return {}

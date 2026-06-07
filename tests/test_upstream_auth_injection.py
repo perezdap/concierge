@@ -106,6 +106,34 @@ async def test_refresh_failure_falls_back_to_empty_headers(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_expired_client_credentials_is_reminted(monkeypatch):
+    svc = _oauth_service()
+    await svc.credentials.save_tokens(
+        "github",
+        OAuthTokenSet(
+            access_token="old",
+            expires_at=time.time() - 10,  # expired, no refresh_token
+            token_endpoint="https://idp.test/token",
+            client_id="client-x",
+            client_secret="secret-x",
+            scope="a b",
+            flow="client_credentials",
+        ),
+    )
+
+    async def fake_exchange(token_endpoint, data, **kwargs):
+        assert data["grant_type"] == "client_credentials"
+        assert data["scope"] == "a b"
+        new = OAuthTokenSet(access_token="reminted", flow="client_credentials")
+        return new, {}
+
+    monkeypatch.setattr(svc, "_exchange_token", fake_exchange)
+
+    provider = OAuthAuthHeaderProvider(svc)
+    assert await provider.headers("github") == {"Authorization": "Bearer reminted"}
+
+
+@pytest.mark.asyncio
 async def test_expired_without_refresh_token_returns_empty():
     svc = _oauth_service()
     await svc.credentials.save_tokens(
@@ -204,6 +232,65 @@ async def test_streamable_http_dynamic_auth_overrides_static():
     adapter._client.post = fake_post
     await adapter.list_tools()
     assert captured["headers"]["Authorization"] == "Bearer dynamic"
+
+
+@pytest.mark.asyncio
+async def test_streamable_http_notification_post_merges_dynamic_auth_header():
+    provider = _FakeProvider({"Authorization": "Bearer injected"})
+    adapter = StreamableHttpAdapter(
+        "github",
+        "http://upstream/mcp",
+        headers={"X-Static": "1"},
+        listen_for_notifications=False,
+        auth_header_provider=provider,
+    )
+    await adapter.connect()
+    captured: dict[str, dict[str, str]] = {}
+
+    async def fake_post(url, json=None, headers=None):
+        captured["headers"] = headers
+        return MagicMock()
+
+    adapter._client.post = fake_post
+    await adapter._post_notification("notifications/initialized")
+    assert captured["headers"]["Authorization"] == "Bearer injected"
+    assert captured["headers"]["X-Static"] == "1"
+    assert provider.calls == ["github"]
+
+
+@pytest.mark.asyncio
+async def test_streamable_http_get_stream_merges_dynamic_auth_header():
+    provider = _FakeProvider({"Authorization": "Bearer injected"})
+    adapter = StreamableHttpAdapter(
+        "github",
+        "http://upstream/mcp",
+        headers={"X-Static": "1"},
+        listen_for_notifications=True,
+        auth_header_provider=provider,
+    )
+    await adapter.connect()
+    captured: dict[str, dict[str, str]] = {}
+
+    class _FakeStream:
+        def __init__(self, headers):
+            captured["headers"] = headers
+
+        async def __aenter__(self):
+            resp = MagicMock()
+            resp.status_code = 204
+            return resp
+
+        async def __aexit__(self, *exc):
+            return False
+
+    def fake_stream(method, url, headers=None):
+        return _FakeStream(headers)
+
+    adapter._client.stream = fake_stream
+    await adapter._listen_loop()
+    assert captured["headers"]["Authorization"] == "Bearer injected"
+    assert captured["headers"]["X-Static"] == "1"
+    assert provider.calls == ["github"]
 
 
 @pytest.mark.asyncio

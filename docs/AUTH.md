@@ -129,8 +129,11 @@ upstream, the adapter consults an `OAuthAuthHeaderProvider` before every request
 
 This means there are two supported ways to authenticate an upstream:
 
-1. **Static header** — put the secret directly in `upstream_servers[].headers`
-   (`Authorization: "Bearer ${TOKEN}"`). Simplest; no refresh.
+1. **Static header** — reference the secret from `upstream_servers[].headers`
+   via an env/secret placeholder rather than pasting the raw token
+   (`Authorization: "Bearer ${TOKEN}"`, with `TOKEN` supplied from the
+   environment or your secret store). Simplest; no refresh. Avoid committing
+   literal token bytes to config files.
 2. **Admin OAuth flow** — connect the upstream via `/admin/oauth/{id}/...`; the
    token is stored, injected, and refreshed automatically.
 

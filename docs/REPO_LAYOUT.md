@@ -29,6 +29,7 @@ concierge/
 │   ├── adapters/
 │   │   ├── base.py                # UpstreamAdapter ABC + AdapterStatus
 │   │   ├── manager.py             # AdapterManager (lifecycle, circuit breaker)
+│   │   ├── auth_headers.py        # AuthHeaderProvider + OAuth token injection
 │   │   ├── stdio.py               # StdioAdapter
 │   │   ├── streamable_http.py     # StreamableHttpAdapter
 │   │   ├── sse_legacy.py          # LegacySseAdapter
@@ -66,7 +67,8 @@ concierge/
     ├── test_payload.py          # schema slimming + result caps + discovery compaction
     ├── test_discovery.py        # profile-scoped discovery + list_changed coalescing
     ├── test_metrics.py          # audit payload sizes + pool/session lifecycle events
-    └── test_config.py           # config defaults + validation (session_pool/payload)
+    ├── test_config.py           # config defaults + validation (session_pool/payload)
+    └── test_upstream_auth_injection.py # dynamic OAuth header injection + refresh into adapters
 ```
 
 ## Configuration knobs

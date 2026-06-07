@@ -388,6 +388,24 @@ class UpstreamOAuthService:
             return None
         if not current.is_expired():
             return current
+        # client-credentials grants typically have no refresh_token; the correct
+        # "refresh" is to re-run the client-credentials exchange with the stored
+        # endpoint/client credentials.
+        if current.flow == "client_credentials":
+            if not current.token_endpoint or not current.client_id or not current.client_secret:
+                raise ValueError(
+                    "client-credentials token expired and cannot be re-minted "
+                    "(missing token_endpoint, client_id, or client_secret in stored credentials)"
+                )
+            return await self.client_credentials(
+                upstream_id=upstream_id,
+                token_endpoint=current.token_endpoint,
+                client_id=current.client_id,
+                client_secret=current.client_secret,
+                scopes=current.scope or "",
+                issuer=current.issuer,
+                revocation_endpoint=current.revocation_endpoint,
+            )
         if not current.refresh_token or not current.token_endpoint or not current.client_id:
             raise ValueError(
                 "access token expired and cannot be refreshed (missing refresh_token, "

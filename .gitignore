@@ -61,3 +61,8 @@ data/
 .mcp_resp*
 .mcp_args
 .mcpcall.sh
+
+# planning-with-files session artifacts (not product deliverables)
+findings.md
+progress.md
+task_plan.md
