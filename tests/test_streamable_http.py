@@ -25,6 +25,7 @@ async def test_post_json_response():
     adapter = StreamableHttpAdapter("srv", "http://upstream/mcp", listen_for_notifications=False)
     await adapter.connect()
     mock_resp = MagicMock()
+    mock_resp.status_code = 200
     mock_resp.headers = {"Content-Type": "application/json"}
     mock_resp.json.return_value = {
         "jsonrpc": "2.0",
@@ -37,12 +38,53 @@ async def test_post_json_response():
 
 
 @pytest.mark.asyncio
+async def test_post_401_reports_auth_error_not_json_parse_error():
+    """A plain-text 401 must surface as an auth/HTTP error, not 'non-JSON response'."""
+    adapter = StreamableHttpAdapter("srv", "http://upstream/mcp", listen_for_notifications=False)
+    await adapter.connect()
+    mock_resp = MagicMock()
+    mock_resp.status_code = 401
+    mock_resp.headers = {
+        "Content-Type": "text/plain",
+        "WWW-Authenticate": 'Bearer error="invalid_token", error_description="token expired"',
+    }
+    mock_resp.text = "bad request: missing required Authorization header"
+    adapter._client.post = AsyncMock(return_value=mock_resp)
+    with pytest.raises(UpstreamUnavailable) as exc:
+        await adapter._post("tools/list")
+    msg = str(exc.value)
+    assert "401" in msg
+    # Prefer the WWW-Authenticate error_description hint.
+    assert "token expired" in msg
+    assert "non-JSON" not in msg
+    assert adapter._connected is False
+    assert adapter._failures >= 1
+
+
+@pytest.mark.asyncio
+async def test_post_500_reports_status_and_body_snippet():
+    adapter = StreamableHttpAdapter("srv", "http://upstream/mcp", listen_for_notifications=False)
+    await adapter.connect()
+    mock_resp = MagicMock()
+    mock_resp.status_code = 500
+    mock_resp.headers = {"Content-Type": "text/plain"}
+    mock_resp.text = "internal error xyz"
+    adapter._client.post = AsyncMock(return_value=mock_resp)
+    with pytest.raises(UpstreamUnavailable) as exc:
+        await adapter._post("tools/list")
+    msg = str(exc.value)
+    assert "500" in msg
+    assert "internal error xyz" in msg
+
+
+@pytest.mark.asyncio
 async def test_post_sse_response():
     adapter = StreamableHttpAdapter("srv", "http://upstream/mcp", listen_for_notifications=False)
     await adapter.connect()
     payload = {"jsonrpc": "2.0", "id": 2, "result": {"ok": True}}
 
     class SseResp:
+        status_code = 200
         headers = {"Content-Type": "text/event-stream"}
 
         async def aiter_text(self):
@@ -62,6 +104,7 @@ async def test_post_sse_response_data_split_across_three_chunks():
     a, b = len(raw) // 3, 2 * (len(raw) // 3)
 
     class SseResp:
+        status_code = 200
         headers = {"Content-Type": "text/event-stream"}
 
         async def aiter_text(self):

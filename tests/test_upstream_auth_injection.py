@@ -176,6 +176,7 @@ async def test_streamable_http_merges_dynamic_auth_header():
     async def fake_post(url, json=None, headers=None):
         captured["headers"] = headers
         resp = MagicMock()
+        resp.status_code = 200
         resp.headers = {"Content-Type": "application/json"}
         resp.json.return_value = {"jsonrpc": "2.0", "id": 1, "result": {"tools": []}}
         return resp
@@ -199,6 +200,7 @@ async def test_streamable_http_no_provider_unchanged():
     async def fake_post(url, json=None, headers=None):
         captured["headers"] = headers
         resp = MagicMock()
+        resp.status_code = 200
         resp.headers = {"Content-Type": "application/json"}
         resp.json.return_value = {"jsonrpc": "2.0", "id": 1, "result": {"tools": []}}
         return resp
@@ -225,6 +227,7 @@ async def test_streamable_http_dynamic_auth_overrides_static():
     async def fake_post(url, json=None, headers=None):
         captured["headers"] = headers
         resp = MagicMock()
+        resp.status_code = 200
         resp.headers = {"Content-Type": "application/json"}
         resp.json.return_value = {"jsonrpc": "2.0", "id": 1, "result": {"tools": []}}
         return resp
