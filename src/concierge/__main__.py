@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import os
 import secrets
 import shutil
 import sys
@@ -244,9 +243,15 @@ def main(argv: list[str] | None = None) -> int:
     )
     a_deny.add_argument("--reason", default=None)
 
-    init = sub.add_parser("init", help="First-run helper: create .env and auto-generate GATEWAY_TOKEN.")
-    init.add_argument("--env-file", default=".env", help="Path to the .env file to create/update.")
-    init.add_argument("--env-example", default=".env.example", help="Template to copy when .env is missing.")
+    init = sub.add_parser(
+        "init", help="First-run helper: create .env and auto-generate GATEWAY_TOKEN."
+    )
+    init.add_argument(
+        "--env-file", default=".env", help="Path to the .env file to create/update."
+    )
+    init.add_argument(
+        "--env-example", default=".env.example", help="Template to copy when .env is missing."
+    )
 
     args = parser.parse_args(argv)
 
