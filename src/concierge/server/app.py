@@ -496,7 +496,7 @@ def _assemble_runtime_bundle(
 ) -> RuntimeBundle:
     """Build swappable gateway runtime from a GatewayConfig (hot-reload path)."""
     catalog = _build_catalog_store(config.storage)
-    publishing = PublishingService(catalog, bus)
+    publishing = PublishingService(catalog, bus, sessions=sessions)  # sessions already passed in
     adapters = AdapterManager(
         catalog,
         refresh_interval_s=config.catalog_refresh_interval_s,
@@ -752,6 +752,7 @@ def build_app(config: GatewayConfig) -> FastAPI:
     sessions = _build_session_manager(config)
     sessions._on_evict = _on_session_evict
     sessions.idle_ttl = config.session_pool.idle_ttl_s
+    publishing.sessions = sessions  # wire write-seam after sessions is built
     for srv in config.upstream_servers:
         adapter = _wrap_cache(
             _build_adapter(srv, auth_header_provider=auth_header_provider), config.cache
