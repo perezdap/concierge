@@ -699,13 +699,9 @@ def build_app(config: GatewayConfig) -> FastAPI:
 
     sessions = _build_session_manager(config)
 
-    # Tearing down a router session also tears down its pooled upstream sessions,
-    # and records the eviction (and how many upstream sessions it freed).
-    # This closure captures `sessions` and `audit` stably; compose_runtime()
-    # will point sessions._on_evict at it on each call.
-    async def _on_session_evict(session_id: str) -> None:
-        freed = await sessions.adapters.evict_router_session(session_id)  # type: ignore[attr-defined]
-        audit.session_evicted(session_id, upstream_sessions_freed=freed)
+    async def _ignore_session_evict(_session_id: str) -> None:
+        """Placeholder until the initial AdapterManager exists."""
+        return None
 
     # ── Swappable runtime (catalog, adapters, profiles, policy, service) ──
     bundle = compose_runtime(
@@ -714,7 +710,7 @@ def build_app(config: GatewayConfig) -> FastAPI:
         bus=bus,
         audit=audit,
         metrics=metrics,
-        on_session_evict=_on_session_evict,
+        on_session_evict=_ignore_session_evict,
         auth_header_provider=auth_header_provider,
     )
     catalog = bundle.catalog
@@ -728,8 +724,10 @@ def build_app(config: GatewayConfig) -> FastAPI:
     revocation = _build_revocation_store(config)
     tenant_tokens = _build_tenant_token_store(config)
     auth = _build_auth(config, revocation, tenant_tokens)
-    # Fix up eviction callback now that we have the real adapters reference.
-    async def _on_session_evict(session_id: str) -> None:  # type: ignore[no-redef]
+
+    # Tearing down a router session also tears down its pooled upstream sessions,
+    # and records the eviction (and how many upstream sessions it freed).
+    async def _on_session_evict(session_id: str) -> None:
         freed = await adapters.evict_router_session(session_id)
         audit.session_evicted(session_id, upstream_sessions_freed=freed)
 

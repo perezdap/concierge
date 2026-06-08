@@ -116,8 +116,7 @@ class RuntimeBundle:
         state.profiles = profiles
         state.service = service
         state.rate_limiter = self.rate_limiter
-        if self.approval_store is not None:
-            state.approval_store = self.approval_store
+        state.approval_store = self.approval_store
 
 
 RuntimeBuilder = Callable[[GatewayConfig], Awaitable[RuntimeBundle]]
@@ -274,7 +273,7 @@ class ReloadCoordinator:
                 return ApplyResult(ok=True, version_id=version_id)
             except Exception as e:  # noqa: BLE001
                 self._active = previous
-                if self.swap_target is not None and previous is not None and swapped:  # noqa: SIM102
+                if self.swap_target is not None and previous is not None and swapped:
                     try:
                         self.swap_target.apply_runtime(previous)
                     except Exception:  # noqa: BLE001
@@ -346,7 +345,7 @@ class ReloadCoordinator:
             failed = self._active
             try:
                 await lkg.start()
-                if self.swap_target is not None:  # noqa: SIM102
+                if self.swap_target is not None:
                     self.swap_target.apply_runtime(lkg)
                 self._active = lkg
                 if failed is not None and failed is not lkg:

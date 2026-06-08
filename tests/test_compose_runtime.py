@@ -11,7 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from concierge.admin.reload import _SERVICE_STABLE_ATTRS, RuntimeBundle  # noqa: PLC2701
+from concierge.admin.reload import _SERVICE_STABLE_ATTRS, RuntimeBundle
 from concierge.config import GatewayConfig
 from concierge.core.catalog import Catalog, InMemoryCatalogStore
 from concierge.core.notifications import NotificationBus
@@ -261,10 +261,11 @@ def test_swap_into_preserves_stable_service_attrs():
     assert state.service.primitives is original_primitives
 
 
-def test_swap_into_updates_rate_limiter():
-    """swap_into updates state.rate_limiter."""
+def test_swap_into_updates_runtime_stores():
+    """swap_into updates runtime stores even when the candidate value is None."""
     bundle = _build_bundle()
     new_bundle = _build_bundle()
+    new_bundle.approval_store = None
     state = _FakeState(
         catalog=bundle.catalog,
         adapters=bundle.adapters,
@@ -272,9 +273,11 @@ def test_swap_into_updates_rate_limiter():
         profiles=bundle.profiles,
         service=bundle.service,
         rate_limiter=bundle.rate_limiter,
+        approval_store=bundle.approval_store,
     )
     new_bundle.swap_into(state)
     assert state.rate_limiter is new_bundle.rate_limiter
+    assert state.approval_store is None
 
 
 def test_swap_into_fresh_state_sets_all_attrs():
@@ -289,3 +292,4 @@ def test_swap_into_fresh_state_sets_all_attrs():
     assert state.publishing is bundle.publishing
     assert state.profiles is bundle.profiles
     assert state.rate_limiter is bundle.rate_limiter
+    assert state.approval_store is bundle.approval_store
