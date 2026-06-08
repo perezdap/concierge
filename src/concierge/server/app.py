@@ -496,7 +496,7 @@ def _assemble_runtime_bundle(
 ) -> RuntimeBundle:
     """Build swappable gateway runtime from a GatewayConfig (hot-reload path)."""
     catalog = _build_catalog_store(config.storage)
-    publishing = PublishingService(catalog, bus)
+    publishing = PublishingService(catalog, bus, sessions=sessions)  # sessions already passed in
     adapters = AdapterManager(
         catalog,
         refresh_interval_s=config.catalog_refresh_interval_s,
@@ -717,10 +717,13 @@ def build_app(config: GatewayConfig) -> FastAPI:
         except Exception as _exc:  # noqa: BLE001
             _log.warning("startup-restore: stored config invalid, falling back to YAML: %s", _exc)
 
-    # Core subsystems
+    # Core subsystems — sessions built first so it can be passed into PublishingService
+    # at construction time (avoids post-hoc attribute assignment).
+    sessions = _build_session_manager(config)
+    sessions.idle_ttl = config.session_pool.idle_ttl_s
     catalog = _build_catalog_store(config.storage)
     bus = NotificationBus()
-    publishing = PublishingService(catalog, bus)
+    publishing = PublishingService(catalog, bus, sessions=sessions)
     metrics = MetricRegistry()
     audit_sinks: list[Any] = [MetricAuditSink(metrics)]
     if config.observability.audit_http_sink_url:
@@ -749,9 +752,7 @@ def build_app(config: GatewayConfig) -> FastAPI:
         freed = await adapters.evict_router_session(session_id)
         audit.session_evicted(session_id, upstream_sessions_freed=freed)
 
-    sessions = _build_session_manager(config)
     sessions._on_evict = _on_session_evict
-    sessions.idle_ttl = config.session_pool.idle_ttl_s
     for srv in config.upstream_servers:
         adapter = _wrap_cache(
             _build_adapter(srv, auth_header_provider=auth_header_provider), config.cache

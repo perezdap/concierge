@@ -43,6 +43,17 @@ class SessionManager:
                 s.last_seen_at = datetime.now(UTC)
             return s
 
+    async def save(self, session: Session) -> None:
+        """Persist mutated session state.
+
+        For the in-memory backend this is a no-op because callers hold a direct
+        reference to the stored object.  For backends that deserialise a fresh
+        copy on every get() (e.g. RedisSessionManager) callers MUST call save()
+        after mutating published buckets or active_profiles so the changes are
+        not silently dropped.
+        """
+        ...
+
     async def require(self, session_id: str | None) -> Session:
         if not session_id:
             raise Unauthorized("missing MCP-Session-Id")
@@ -122,6 +133,19 @@ class RedisSessionManager(SessionManager):
         # Refresh TTL and last_seen_at in Redis (idempotent, cheap).
         await self._redis.set(self._key(session_id), s.model_dump_json(), ex=self.idle_ttl)
         return s
+
+    async def save(self, session: Session) -> None:
+        """Write mutated session state back to Redis.
+
+        Must be called after any mutation to published buckets or active_profiles
+        because get() returns a freshly deserialised copy each time — in-place
+        mutations are not visible to subsequent get() calls without an explicit save.
+        """
+        await self._redis.set(
+            self._key(session.session_id),
+            session.model_dump_json(),
+            ex=self.idle_ttl,
+        )
 
     async def close(self, session_id: str) -> None:
         existed = await self._redis.delete(self._key(session_id)) > 0
