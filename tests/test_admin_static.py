@@ -122,6 +122,19 @@ def test_admin_root_redirects_to_slash(
         assert resp.headers["location"] == "/admin/"
 
 
+def test_admin_root_redirect_preserves_query_string(
+    gateway_config: GatewayConfig,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """GET /admin?foo=bar keeps the query so deep links / OAuth callbacks survive."""
+    _make_dist(tmp_path, monkeypatch)
+    with TestClient(build_app(gateway_config)) as client:
+        resp = client.get("/admin?foo=bar&baz=1", follow_redirects=False)
+        assert resp.status_code == 308
+        assert resp.headers["location"] == "/admin/?foo=bar&baz=1"
+
+
 def test_admin_unknown_html_path_serves_spa_shell(
     gateway_config: GatewayConfig,
     tmp_path: Path,

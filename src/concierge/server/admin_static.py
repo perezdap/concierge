@@ -140,9 +140,12 @@ def install_admin_ui(app: FastAPI) -> Path | None:
 
     def _admin_redirect(request: Request) -> RedirectResponse:
         # Permanent (308) is semantically right: the canonical URL is /admin/.
-        # Starlette invokes function endpoints as ``endpoint(request)``, so the
-        # parameter is required even though it is unused.
-        return RedirectResponse(url="/admin/", status_code=308)
+        # Preserve the query string so ``/admin?foo=bar`` lands on
+        # ``/admin/?foo=bar`` (deep links / OAuth callbacks read it).
+        target = "/admin/"
+        if request.url.query:
+            target = f"{target}?{request.url.query}"
+        return RedirectResponse(url=target, status_code=308)
 
     def _admin_spa_catchall(request: Request) -> Response:
         # Catch-all for unknown /admin/* paths. Only responds to GETs that
