@@ -150,6 +150,20 @@ def test_admin_unknown_html_path_serves_spa_shell(
             assert "Admin UI" in resp.text, path
 
 
+def test_admin_head_unknown_html_path_serves_shell(
+    gateway_config: GatewayConfig,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """HEAD is treated like GET: an HTML probe to an unknown /admin route gets a
+    200 with shell headers (and no body), not a 404 from the catch-all."""
+    _make_dist(tmp_path, monkeypatch)
+    with TestClient(build_app(gateway_config)) as client:
+        resp = client.head("/admin/some/deep/route", headers={"Accept": "text/html"})
+        assert resp.status_code == 200
+        assert resp.content == b""  # HEAD: headers only, no body
+
+
 def test_admin_asset_probe_does_not_trigger_auth(
     bearer_gateway_config: GatewayConfig,
     tmp_path: Path,
@@ -163,6 +177,12 @@ def test_admin_asset_probe_does_not_trigger_auth(
         resp = client.get("/admin/favicon.ico", headers={"Accept": "text/html"})
         assert resp.status_code == 200
         assert "Admin UI" in resp.text
+
+        # Image-style favicon probe (browsers send Accept: image/*): it does not
+        # want the HTML shell, so the catch-all returns a bare 404 — crucially
+        # NOT a 401, i.e. it still never reaches the auth-protected API router.
+        img = client.get("/admin/favicon.ico", headers={"Accept": "image/*"})
+        assert img.status_code == 404
 
 
 def test_admin_ui_absent_is_noop(gateway_config: GatewayConfig, monkeypatch) -> None:

@@ -83,7 +83,9 @@ def wants_admin_spa_index(request: Request) -> bool:
     """True when the request should receive SPA index.html instead of an API handler.
 
     Rules:
-    - GET only (POST/DELETE/PATCH go to the API or fail).
+    - GET or HEAD only (POST/DELETE/PATCH go to the API or fail). HEAD is
+      treated like GET so ``curl -I`` / cache probes against SPA routes get the
+      same answer as a GET would.
     - ``Accept: text/html`` required — JSON / image / font requests pass through.
     - The relative path under ``/admin/`` must not be a known API segment and
       must not be a hashed asset (``/admin/assets/...``).
@@ -92,7 +94,7 @@ def wants_admin_spa_index(request: Request) -> bool:
       for HTML. This is the SPA-catch-all behavior that prevents the auth dep
       from ever running on browser asset probes like ``/favicon.ico``.
     """
-    if request.method != "GET":
+    if request.method not in ("GET", "HEAD"):
         return False
     accept = request.headers.get("accept", "")
     if "text/html" not in accept:
@@ -148,10 +150,16 @@ def install_admin_ui(app: FastAPI) -> Path | None:
         return RedirectResponse(url=target, status_code=308)
 
     def _admin_spa_catchall(request: Request) -> Response:
-        # Catch-all for unknown /admin/* paths. Only responds to GETs that
-        # asked for HTML — JSON/image/font requests fall through to the API
-        # routers (which will 404 or 401 them as appropriate).
+        # Catch-all for unknown /admin/* paths. Only serves the shell for
+        # GET/HEAD that asked for HTML. Because this Route is appended last, the
+        # path it sees was claimed by no API router; a non-HTML request here is
+        # deliberately answered with a bare 404 rather than handed to an
+        # auth-protected router (that is the whole point — keep browser asset
+        # probes like /admin/favicon.ico off the auth path). Known API-segment
+        # paths still match their own routers earlier and never reach here.
         if wants_admin_spa_index(request):
+            # FileResponse detects HEAD from the request scope and sends
+            # headers only, so the same call serves both GET and HEAD.
             return FileResponse(index_path, headers=dict(_SHELL_CACHE_HEADERS))
         return Response(status_code=404)
 
