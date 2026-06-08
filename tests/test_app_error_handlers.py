@@ -94,6 +94,9 @@ def test_gateway_error_code_maps_to_http_status(
         forbidden = client.get("/_test/forbidden")
         assert forbidden.status_code == 403
         assert forbidden.json()["error"]["code"] == -32002
+        # Non-auth GatewayErrors go through the base handler, which never adds a
+        # WWW-Authenticate challenge (only the dedicated Unauthorized handler does).
+        assert "WWW-Authenticate" not in forbidden.headers
 
         limited = client.get("/_test/ratelimited")
         assert limited.status_code == 429

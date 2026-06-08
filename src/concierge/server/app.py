@@ -941,9 +941,11 @@ def build_app(config: GatewayConfig) -> FastAPI:
     # unauthenticated browser probe like /favicon.ico).
     @app.exception_handler(GatewayError)
     async def _gateway_error_handler(request: Request, exc: GatewayError):  # type: ignore[no-untyped-def]
-        # Unauthorized is expected (no/invalid credential), not a server error.
-        log = _log.info if isinstance(exc, Unauthorized) else _log.warning
-        log(
+        # Unauthorized is a GatewayError subclass but has its own handler below;
+        # Starlette resolves by MRO specificity, so it never reaches here. This
+        # handler only sees the genuine error subclasses (Forbidden, RateLimited,
+        # upstream failures, ...), which warrant a warning.
+        _log.warning(
             "gateway error on %s %s: code=%d message=%s",
             request.method, request.url.path, exc.code, exc.message,
         )
