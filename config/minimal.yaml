@@ -11,7 +11,7 @@ gateway:
   port: 8765
 
 auth:
-  type: localhost
+  type: none
 
 log_level: INFO
 
