@@ -69,7 +69,8 @@ class PublishingService:
             enabled.append(name)
             touched.add(entry.primitive_type)
 
-        await self._persist(session)
+        if enabled:
+            await self._persist(session)
         self._emit_changed(session.session_id, touched)
         return enabled, skipped
 
@@ -91,7 +92,8 @@ class PublishingService:
                     removed.append(name)
                     touched.add(cand)
                     break
-        await self._persist(session)
+        if removed:
+            await self._persist(session)
         self._emit_changed(session.session_id, touched)
         return removed
 
@@ -101,7 +103,8 @@ class PublishingService:
             bucket = session.published_set(ptype)
             n += len(bucket)
             bucket.clear()
-        await self._persist(session)
+        if n:
+            await self._persist(session)
         self._emit_changed(session.session_id, set(PrimitiveType))
         return n
 

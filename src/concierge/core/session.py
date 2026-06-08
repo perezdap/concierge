@@ -52,6 +52,7 @@ class SessionManager:
         after mutating published buckets or active_profiles so the changes are
         not silently dropped.
         """
+        ...
 
     async def require(self, session_id: str | None) -> Session:
         if not session_id:
