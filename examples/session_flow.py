@@ -28,7 +28,12 @@ import httpx
 BASE_URL = "http://127.0.0.1:8765/mcp"
 
 
-async def rpc(client: httpx.AsyncClient, method: str, params: dict | None = None, session_id: str | None = None):
+async def rpc(
+    client: httpx.AsyncClient,
+    method: str,
+    params: dict | None = None,
+    session_id: str | None = None,
+):
     headers = {"Accept": "application/json"}
     if session_id:
         headers["MCP-Session-Id"] = session_id

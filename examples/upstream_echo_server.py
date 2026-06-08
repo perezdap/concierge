@@ -72,7 +72,9 @@ def handle(msg: dict[str, Any]) -> dict[str, Any] | None:
             return _ok(rid, {"content": [{"type": "text", "text": str(args.get("text", ""))}]})
         if name == "now":
             import datetime
-            return _ok(rid, {"content": [{"type": "text", "text": datetime.datetime.utcnow().isoformat() + "Z"}]})
+
+            now_text = datetime.datetime.utcnow().isoformat() + "Z"
+            return _ok(rid, {"content": [{"type": "text", "text": now_text}]})
         return _err(rid, -32601, f"unknown tool: {name}")
     if method == "ping":
         return _ok(rid, {})
