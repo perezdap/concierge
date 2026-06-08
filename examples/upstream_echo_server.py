@@ -11,6 +11,7 @@ Or have the gateway spawn it via the stdio upstream config.
 """
 from __future__ import annotations
 
+import datetime
 import json
 import sys
 from typing import Any
@@ -71,9 +72,8 @@ def handle(msg: dict[str, Any]) -> dict[str, Any] | None:
         if name == "echo":
             return _ok(rid, {"content": [{"type": "text", "text": str(args.get("text", ""))}]})
         if name == "now":
-            import datetime
-
-            now_text = datetime.datetime.utcnow().isoformat() + "Z"
+            now_text = datetime.datetime.now(datetime.UTC).isoformat()
+            now_text = now_text.replace("+00:00", "Z")
             return _ok(rid, {"content": [{"type": "text", "text": now_text}]})
         return _err(rid, -32601, f"unknown tool: {name}")
     if method == "ping":
