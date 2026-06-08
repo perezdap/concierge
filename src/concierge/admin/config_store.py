@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sqlite3
+import threading
 from abc import ABC, abstractmethod
 from datetime import UTC, datetime
 from typing import Any
@@ -177,8 +178,18 @@ class SqliteConfigStore(ConfigStore):
 
     def __init__(self, path: str = ":memory:") -> None:
         self._path = path
-        self._conn = sqlite3.connect(path, check_same_thread=False)
+        # ``check_same_thread=False`` lets us hand the connection to
+        # ``asyncio.to_thread`` workers; ``timeout`` bounds how long an outer
+        # acquire of the SQLite file lock will block before raising. The
+        # ``threading.Lock`` below serialises all access to this single
+        # shared connection across worker threads — without it, concurrent
+        # ``execute()`` calls race the sqlite3 connection's internal state
+        # machine and produce ``InterfaceError`` (or, on CPython 3.12, a
+        # native segfault).
+        self._conn = sqlite3.connect(path, check_same_thread=False, timeout=5.0)
+        self._lock = threading.Lock()
         self._conn.execute("PRAGMA journal_mode=WAL")
+        self._conn.execute("PRAGMA busy_timeout=5000")
         self._conn.executescript(_SQLITE_SCHEMA)
         self._conn.commit()
 
@@ -251,51 +262,52 @@ class SqliteConfigStore(ConfigStore):
             raise ValueError("Draft validation failed; cannot promote")
 
         def _promote() -> str:
-            now = _iso_now()
-            cur = self._conn.cursor()
-            cur.execute("BEGIN IMMEDIATE")
-            try:
-                active_id = self._get_state_sync(_STATE_ACTIVE)
-                draft_row = cur.execute(
-                    "SELECT id, config_json, created_by FROM config_versions WHERE id = ?",
-                    (draft.id,),
-                ).fetchone()
-                if draft_row is None:
-                    raise ValueError("Draft version disappeared during promote")
+            with self._lock:
+                now = _iso_now()
+                cur = self._conn.cursor()
+                cur.execute("BEGIN IMMEDIATE")
+                try:
+                    active_id = self._get_state_sync_locked(_STATE_ACTIVE)
+                    draft_row = cur.execute(
+                        "SELECT id, config_json, created_by FROM config_versions WHERE id = ?",
+                        (draft.id,),
+                    ).fetchone()
+                    if draft_row is None:
+                        raise ValueError("Draft version disappeared during promote")
 
-                if active_id:
+                    if active_id:
+                        cur.execute(
+                            "UPDATE config_versions SET status = ? WHERE id = ?",
+                            (ConfigVersionStatus.SUPERSEDED.value, active_id),
+                        )
+                        self._set_state_sync_locked(_STATE_LAST_KNOWN_GOOD, active_id, cur)
+                        parent_id = active_id
+                    else:
+                        parent_id = None
+
                     cur.execute(
-                        "UPDATE config_versions SET status = ? WHERE id = ?",
-                        (ConfigVersionStatus.SUPERSEDED.value, active_id),
+                        """
+                        UPDATE config_versions
+                        SET status = ?, promoted_at = ?, created_by = COALESCE(?, created_by),
+                            validation_json = ?, parent_id = COALESCE(parent_id, ?)
+                        WHERE id = ?
+                        """,
+                        (
+                            ConfigVersionStatus.ACTIVE.value,
+                            now,
+                            created_by,
+                            validation.model_dump_json(),
+                            parent_id,
+                            draft.id,
+                        ),
                     )
-                    self._set_state_sync(_STATE_LAST_KNOWN_GOOD, active_id, cur)
-                    parent_id = active_id
-                else:
-                    parent_id = None
-
-                cur.execute(
-                    """
-                    UPDATE config_versions
-                    SET status = ?, promoted_at = ?, created_by = COALESCE(?, created_by),
-                        validation_json = ?, parent_id = COALESCE(parent_id, ?)
-                    WHERE id = ?
-                    """,
-                    (
-                        ConfigVersionStatus.ACTIVE.value,
-                        now,
-                        created_by,
-                        validation.model_dump_json(),
-                        parent_id,
-                        draft.id,
-                    ),
-                )
-                self._set_state_sync(_STATE_ACTIVE, draft.id, cur)
-                self._delete_state_sync(_STATE_DRAFT, cur)
-                cur.execute("COMMIT")
-                return draft.id
-            except Exception:
-                cur.execute("ROLLBACK")
-                raise
+                    self._set_state_sync_locked(_STATE_ACTIVE, draft.id, cur)
+                    self._delete_state_sync_locked(_STATE_DRAFT, cur)
+                    cur.execute("COMMIT")
+                    return draft.id
+                except Exception:
+                    cur.execute("ROLLBACK")
+                    raise
 
         promoted_id = await asyncio.to_thread(_promote)
         version = await self._get_version(promoted_id)
@@ -304,15 +316,17 @@ class SqliteConfigStore(ConfigStore):
 
     async def list_versions(self, *, limit: int = 50) -> list[ConfigVersionSummary]:
         def _run() -> list[ConfigVersionSummary]:
-            rows = self._conn.execute(
-                """
-                SELECT id, status, created_at, created_by, validation_json, parent_id, promoted_at
-                FROM config_versions
-                ORDER BY created_at DESC
-                LIMIT ?
-                """,
-                (limit,),
-            ).fetchall()
+            with self._lock:
+                rows = self._conn.execute(
+                    """
+                    SELECT id, status, created_at, created_by,
+                           validation_json, parent_id, promoted_at
+                    FROM config_versions
+                    ORDER BY created_at DESC
+                    LIMIT ?
+                    """,
+                    (limit,),
+                ).fetchall()
             out: list[ConfigVersionSummary] = []
             for row in rows:
                 validation_ok = None
@@ -340,28 +354,29 @@ class SqliteConfigStore(ConfigStore):
             raise ValueError("No last-known-good version to roll back to")
 
         def _rollback() -> str:
-            cur = self._conn.cursor()
-            cur.execute("BEGIN IMMEDIATE")
-            try:
-                active_id = self._get_state_sync(_STATE_ACTIVE)
-                now = _iso_now()
-                if active_id and active_id != lkg_id:
+            with self._lock:
+                cur = self._conn.cursor()
+                cur.execute("BEGIN IMMEDIATE")
+                try:
+                    active_id = self._get_state_sync_locked(_STATE_ACTIVE)
+                    now = _iso_now()
+                    if active_id and active_id != lkg_id:
+                        cur.execute(
+                            "UPDATE config_versions SET status = ? WHERE id = ?",
+                            (ConfigVersionStatus.ROLLED_BACK.value, active_id),
+                        )
                     cur.execute(
-                        "UPDATE config_versions SET status = ? WHERE id = ?",
-                        (ConfigVersionStatus.ROLLED_BACK.value, active_id),
+                        "UPDATE config_versions SET status = ?, promoted_at = ? WHERE id = ?",
+                        (ConfigVersionStatus.ACTIVE.value, now, lkg_id),
                     )
-                cur.execute(
-                    "UPDATE config_versions SET status = ?, promoted_at = ? WHERE id = ?",
-                    (ConfigVersionStatus.ACTIVE.value, now, lkg_id),
-                )
-                self._set_state_sync(_STATE_ACTIVE, lkg_id, cur)
-                if active_id and active_id != lkg_id:
-                    self._set_state_sync(_STATE_LAST_KNOWN_GOOD, active_id, cur)
-                cur.execute("COMMIT")
-                return lkg_id
-            except Exception:
-                cur.execute("ROLLBACK")
-                raise
+                    self._set_state_sync_locked(_STATE_ACTIVE, lkg_id, cur)
+                    if active_id and active_id != lkg_id:
+                        self._set_state_sync_locked(_STATE_LAST_KNOWN_GOOD, active_id, cur)
+                    cur.execute("COMMIT")
+                    return lkg_id
+                except Exception:
+                    cur.execute("ROLLBACK")
+                    raise
 
         rolled_id = await asyncio.to_thread(_rollback)
         version = await self._get_version(rolled_id)
@@ -389,22 +404,36 @@ class SqliteConfigStore(ConfigStore):
 
     def get_active_config_sync(self) -> dict[str, Any] | None:
         """Return the active config dict synchronously — for use during startup."""
-        active_id = self._get_state_sync(_STATE_ACTIVE)
-        if not active_id:
-            return None
-        row = self._conn.execute(
-            "SELECT config_json FROM config_versions WHERE id = ?",
-            (active_id,),
-        ).fetchone()
-        return json.loads(row[0]) if row else None
+        with self._lock:
+            active_id = self._get_state_sync_locked(_STATE_ACTIVE)
+            if not active_id:
+                return None
+            row = self._conn.execute(
+                "SELECT config_json FROM config_versions WHERE id = ?",
+                (active_id,),
+            ).fetchone()
+            return json.loads(row[0]) if row else None
 
     def close(self) -> None:
-        self._conn.close()
+        with self._lock:
+            self._conn.close()
 
     async def _get_state(self, key: str) -> str | None:
         return await asyncio.to_thread(self._get_state_sync, key)
 
     def _get_state_sync(self, key: str, cur: sqlite3.Cursor | None = None) -> str | None:
+        # Public-ish sync entry point. When called from outside a transaction
+        # (cur is None) we own the connection lock; when called from inside a
+        # transactional closure the caller already holds the lock and uses the
+        # ``_locked`` variant instead.
+        if cur is None:
+            with self._lock:
+                return self._get_state_sync_locked(key, cur)
+        return self._get_state_sync_locked(key, cur)
+
+    def _get_state_sync_locked(
+        self, key: str, cur: sqlite3.Cursor | None = None
+    ) -> str | None:
         if cur is None:
             row = self._conn.execute(
                 "SELECT value FROM config_state WHERE key = ?", (key,)
@@ -420,6 +449,15 @@ class SqliteConfigStore(ConfigStore):
         self, key: str, value: str, cur: sqlite3.Cursor | None = None
     ) -> None:
         if cur is None:
+            with self._lock:
+                self._set_state_sync_locked(key, value, cur)
+            return
+        self._set_state_sync_locked(key, value, cur)
+
+    def _set_state_sync_locked(
+        self, key: str, value: str, cur: sqlite3.Cursor | None = None
+    ) -> None:
+        if cur is None:
             self._conn.execute(
                 "INSERT OR REPLACE INTO config_state (key, value) VALUES (?, ?)",
                 (key, value),
@@ -431,19 +469,20 @@ class SqliteConfigStore(ConfigStore):
                 (key, value),
             )
 
-    def _delete_state_sync(self, key: str, cur: sqlite3.Cursor) -> None:
+    def _delete_state_sync_locked(self, key: str, cur: sqlite3.Cursor) -> None:
         cur.execute("DELETE FROM config_state WHERE key = ?", (key,))
 
     async def _get_version(self, version_id: str) -> ConfigVersion | None:
         def _run() -> ConfigVersion | None:
-            row = self._conn.execute(
-                """
-                SELECT id, status, created_at, created_by, config_json, validation_json,
-                       parent_id, promoted_at
-                FROM config_versions WHERE id = ?
-                """,
-                (version_id,),
-            ).fetchone()
+            with self._lock:
+                row = self._conn.execute(
+                    """
+                    SELECT id, status, created_at, created_by, config_json, validation_json,
+                           parent_id, promoted_at
+                    FROM config_versions WHERE id = ?
+                    """,
+                    (version_id,),
+                ).fetchone()
             if row is None:
                 return None
             validation = None
@@ -464,25 +503,26 @@ class SqliteConfigStore(ConfigStore):
 
     async def _upsert_version(self, version: ConfigVersion) -> None:
         def _run() -> None:
-            self._conn.execute(
-                """
-                INSERT OR REPLACE INTO config_versions
-                    (id, status, created_at, created_by, config_json, validation_json,
-                     parent_id, promoted_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    version.id,
-                    version.status.value,
-                    _iso_dt(version.created_at),
-                    version.created_by,
-                    json.dumps(version.config),
-                    version.validation.model_dump_json() if version.validation else None,
-                    version.parent_id,
-                    _iso_dt(version.promoted_at) if version.promoted_at else None,
-                ),
-            )
-            self._conn.commit()
+            with self._lock:
+                self._conn.execute(
+                    """
+                    INSERT OR REPLACE INTO config_versions
+                        (id, status, created_at, created_by, config_json, validation_json,
+                         parent_id, promoted_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        version.id,
+                        version.status.value,
+                        _iso_dt(version.created_at),
+                        version.created_by,
+                        json.dumps(version.config),
+                        version.validation.model_dump_json() if version.validation else None,
+                        version.parent_id,
+                        _iso_dt(version.promoted_at) if version.promoted_at else None,
+                    ),
+                )
+                self._conn.commit()
 
         await asyncio.to_thread(_run)
 

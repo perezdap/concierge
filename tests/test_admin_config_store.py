@@ -247,6 +247,61 @@ def test_overlay_dynamic_from_store_replaces_dynamic_fields() -> None:
     assert result["log_level"] == yaml_cfg["log_level"]
 
 
+async def test_concurrent_reads_and_writes_do_not_wedge_connection() -> None:
+    """Regression: shared sqlite3.Connection across asyncio.to_thread workers must not
+    race. Before the fix, this consistently raised
+    ``sqlite3.InterfaceError: bad parameter or other API misuse`` under load.
+
+    Repro pattern: many concurrent admin reads (``get_draft``/``get_active_redacted``)
+    interleaved with admin writes (``create_or_update_draft``) all running through
+    ``asyncio.to_thread`` on the same connection.
+    """
+    import asyncio
+
+    store = SqliteConfigStore(":memory:")
+    try:
+        # Seed: write one draft so reads have something to deserialize.
+        cfg = _minimal_config_dict()
+        await store.create_or_update_draft(cfg, created_by="seed")
+
+        async def read_draft() -> None:
+            for _ in range(20):
+                await store.get_draft()
+
+        async def read_active() -> None:
+            for _ in range(20):
+                await store.get_active_redacted()
+
+        async def write_draft(label: str) -> None:
+            for i in range(10):
+                local = _minimal_config_dict()
+                # Mutate to force a real upsert each time.
+                local["log_level"] = "INFO" if i % 2 == 0 else "DEBUG"
+                await store.create_or_update_draft(local, created_by=f"{label}-{i}")
+
+        async def list_versions_loop() -> None:
+            for _ in range(20):
+                await store.list_versions(limit=10)
+
+        # Fan out 24 concurrent tasks against the same connection.
+        tasks: list = []
+        tasks.extend(read_draft() for _ in range(8))
+        tasks.extend(read_active() for _ in range(8))
+        tasks.extend(write_draft(f"w{i}") for i in range(4))
+        tasks.extend(list_versions_loop() for _ in range(4))
+
+        # Without the fix, gather() surfaces sqlite3.InterfaceError from at least
+        # one worker. With the fix, every task completes cleanly.
+        await asyncio.gather(*tasks)
+
+        # Connection must still be usable after the storm.
+        draft = await store.get_draft()
+        assert draft is not None
+        assert draft.config["log_level"] in ("INFO", "DEBUG")
+    finally:
+        store.close()
+
+
 def test_overlay_dynamic_from_store_missing_keys_unchanged() -> None:
     from concierge.admin.config_store import overlay_dynamic_from_store
 
