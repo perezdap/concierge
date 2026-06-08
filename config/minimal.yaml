@@ -1,0 +1,9 @@
+# Minimal config used by tests — no upstreams, no-auth, default gateway settings.
+gateway:
+  host: 127.0.0.1
+  port: 8765
+
+auth:
+  type: none
+
+log_level: INFO

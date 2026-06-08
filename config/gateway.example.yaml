@@ -1,0 +1,29 @@
+# Example gateway config — illustrates upstream servers with env-var credentials.
+#
+# Copy this to config/gateway.yaml and adjust for your setup.
+# Credential placeholders use ${VAR:-} so the server starts cleanly with no
+# .env present (the empty default is intentional — populate .env for real use).
+
+gateway:
+  host: 0.0.0.0
+  port: 8765
+  bind_public: true
+
+auth:
+  type: bearer
+  bearer_tokens: ["${GATEWAY_TOKEN:-}"]
+
+upstream_servers:
+  - id: notes
+    transport: streamable_http
+    url: http://localhost:8001/mcp
+    headers:
+      Authorization: "Bearer ${NOTES_TOKEN:-}"
+
+  - id: legacy-jira
+    transport: sse_legacy
+    url: http://localhost:8002/sse
+    headers:
+      Authorization: "Bearer ${JIRA_TOKEN:-}"
+
+log_level: INFO
