@@ -42,7 +42,25 @@ from ..core.notifications import NotificationBus
 from ..core.publishing import PublishingService
 from ..core.session import RedisSessionManager, SessionManager
 from ..core.types import PrimitiveType
-from ..errors import GatewayError, Unauthorized
+from ..errors import (
+    GW_APPROVAL_REQUIRED,
+    GW_FORBIDDEN,
+    GW_NOT_PUBLISHED,
+    GW_RATE_LIMITED,
+    GW_SANITIZATION_FAILED,
+    GW_UNAUTHORIZED,
+    GW_UNKNOWN_PRIMITIVE,
+    GW_UPSTREAM_CIRCUIT_OPEN,
+    GW_UPSTREAM_PROTOCOL,
+    GW_UPSTREAM_TIMEOUT,
+    GW_UPSTREAM_UNAVAILABLE,
+    JSONRPC_INVALID_PARAMS,
+    JSONRPC_INVALID_REQUEST,
+    JSONRPC_METHOD_NOT_FOUND,
+    JSONRPC_PARSE_ERROR,
+    GatewayError,
+    Unauthorized,
+)
 from ..gateway.profiles import Profile, ProfileRegistry, ProfileSelector
 from ..gateway.service import GatewayService
 from ..observability import (
@@ -114,21 +132,21 @@ _log = get_logger("concierge.app")
 # Gateway-specific JSON-RPC code → HTTP status mapping (errors.py).
 # Codes outside this map fall back to 500 (logged as a server error).
 _HTTP_STATUS_FOR_GATEWAY_CODE: dict[int, int] = {
-    -32001: 401,  # GW_UNAUTHORIZED
-    -32002: 403,  # GW_FORBIDDEN
-    -32003: 429,  # GW_RATE_LIMITED
-    -32004: 403,  # GW_APPROVAL_REQUIRED
-    -32005: 404,  # GW_NOT_PUBLISHED
-    -32006: 404,  # GW_UNKNOWN_PRIMITIVE
-    -32010: 502,  # GW_UPSTREAM_UNAVAILABLE
-    -32011: 504,  # GW_UPSTREAM_TIMEOUT
-    -32012: 503,  # GW_UPSTREAM_CIRCUIT_OPEN
-    -32013: 502,  # GW_UPSTREAM_PROTOCOL
-    -32020: 502,  # GW_SANITIZATION_FAILED (treat as bad gateway)
-    -32602: 400,  # JSONRPC_INVALID_PARAMS
-    -32601: 404,  # JSONRPC_METHOD_NOT_FOUND
-    -32600: 400,  # JSONRPC_INVALID_REQUEST
-    -32700: 400,  # JSONRPC_PARSE_ERROR
+    GW_UNAUTHORIZED: 401,
+    GW_FORBIDDEN: 403,
+    GW_RATE_LIMITED: 429,
+    GW_APPROVAL_REQUIRED: 403,
+    GW_NOT_PUBLISHED: 404,
+    GW_UNKNOWN_PRIMITIVE: 404,
+    GW_UPSTREAM_UNAVAILABLE: 502,
+    GW_UPSTREAM_TIMEOUT: 504,
+    GW_UPSTREAM_CIRCUIT_OPEN: 503,
+    GW_UPSTREAM_PROTOCOL: 502,
+    GW_SANITIZATION_FAILED: 502,  # treat as bad gateway
+    JSONRPC_INVALID_PARAMS: 400,
+    JSONRPC_METHOD_NOT_FOUND: 404,
+    JSONRPC_INVALID_REQUEST: 400,
+    JSONRPC_PARSE_ERROR: 400,
 }
 
 
@@ -923,9 +941,11 @@ def build_app(config: GatewayConfig) -> FastAPI:
     # unauthenticated browser probe like /favicon.ico).
     @app.exception_handler(GatewayError)
     async def _gateway_error_handler(request: Request, exc: GatewayError):  # type: ignore[no-untyped-def]
-        # Unauthorized is expected (no/invalid credential), not a server error.
-        log = _log.info if isinstance(exc, Unauthorized) else _log.warning
-        log(
+        # Unauthorized is a GatewayError subclass but has its own handler below;
+        # Starlette resolves by MRO specificity, so it never reaches here. This
+        # handler only sees the genuine error subclasses (Forbidden, RateLimited,
+        # upstream failures, ...), which warrant a warning.
+        _log.warning(
             "gateway error on %s %s: code=%d message=%s",
             request.method, request.url.path, exc.code, exc.message,
         )
@@ -934,11 +954,21 @@ def build_app(config: GatewayConfig) -> FastAPI:
             content={"error": exc.to_jsonrpc()},
         )
 
+    # Only advertise a Bearer challenge when a bearer-style credential is
+    # actually accepted. The provider chain (or the legacy ``type``) may select
+    # localhost / mTLS / OIDC, for which ``WWW-Authenticate: Bearer`` is wrong
+    # and can mislead clients.
+    if config.auth.providers:
+        _active_auth = [str(p) for p in config.auth.providers]
+    else:
+        _active_auth = [str(config.auth.type)]
+    _bearer_challenge = any(p in ("bearer", "tenant_token") for p in _active_auth)
+
     @app.exception_handler(Unauthorized)
     async def _unauthorized_handler(request: Request, exc: Unauthorized):  # type: ignore[no-untyped-def]
         # Auth failures are routine (missing/expired tokens, browser probes) and
-        # should never emit a stack trace. Log a single line; return a clean
-        # 401 with a WWW-Authenticate hint.
+        # should never emit a stack trace. Log a single line; return a clean 401
+        # with a WWW-Authenticate hint only when a Bearer scheme is in play.
         _log.info(
             "unauthorized on %s %s from %s: %s",
             request.method,
@@ -946,10 +976,11 @@ def build_app(config: GatewayConfig) -> FastAPI:
             request.client.host if request.client else "?",
             exc.message,
         )
+        headers = {"WWW-Authenticate": "Bearer"} if _bearer_challenge else None
         return JSONResponse(
             status_code=401,
             content={"error": exc.to_jsonrpc()},
-            headers={"WWW-Authenticate": "Bearer"},
+            headers=headers,
         )
 
     # Enforce the Origin allow-list globally, ahead of every route handler, so no

@@ -113,13 +113,34 @@ def test_admin_root_redirects_to_slash(
     """GET /admin (no trailing slash) is a 308 to the canonical /admin/.
 
     Regression for GET /admin returning {"detail": "Not Found"} because no
-    route claimed the bare prefix.
+    route claimed the bare prefix. The text/html case is the real browser entry
+    path — the SPA fallback middleware must NOT preempt the redirect there.
     """
     _make_dist(tmp_path, monkeypatch)
     with TestClient(build_app(gateway_config)) as client:
-        resp = client.get("/admin", follow_redirects=False)
+        for accept in (None, "text/html", "text/html,application/xhtml+xml"):
+            headers = {"Accept": accept} if accept else {}
+            resp = client.get("/admin", headers=headers, follow_redirects=False)
+            assert resp.status_code == 308, accept
+            assert resp.headers["location"] == "/admin/", accept
+
+
+def test_admin_root_redirect_preserves_query_string(
+    gateway_config: GatewayConfig,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """GET /admin?foo=bar keeps the query so deep links / OAuth callbacks survive,
+    including the real-browser text/html case (not preempted by the middleware)."""
+    _make_dist(tmp_path, monkeypatch)
+    with TestClient(build_app(gateway_config)) as client:
+        resp = client.get(
+            "/admin?foo=bar&baz=1",
+            headers={"Accept": "text/html"},
+            follow_redirects=False,
+        )
         assert resp.status_code == 308
-        assert resp.headers["location"] == "/admin/"
+        assert resp.headers["location"] == "/admin/?foo=bar&baz=1"
 
 
 def test_admin_unknown_html_path_serves_spa_shell(
@@ -137,6 +158,20 @@ def test_admin_unknown_html_path_serves_spa_shell(
             assert "Admin UI" in resp.text, path
 
 
+def test_admin_head_unknown_html_path_serves_shell(
+    gateway_config: GatewayConfig,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """HEAD is treated like GET: an HTML probe to an unknown /admin route gets a
+    200 with shell headers (and no body), not a 404 from the catch-all."""
+    _make_dist(tmp_path, monkeypatch)
+    with TestClient(build_app(gateway_config)) as client:
+        resp = client.head("/admin/some/deep/route", headers={"Accept": "text/html"})
+        assert resp.status_code == 200
+        assert resp.content == b""  # HEAD: headers only, no body
+
+
 def test_admin_asset_probe_does_not_trigger_auth(
     bearer_gateway_config: GatewayConfig,
     tmp_path: Path,
@@ -150,6 +185,45 @@ def test_admin_asset_probe_does_not_trigger_auth(
         resp = client.get("/admin/favicon.ico", headers={"Accept": "text/html"})
         assert resp.status_code == 200
         assert "Admin UI" in resp.text
+
+        # Image-style favicon probe (browsers send Accept: image/*): it does not
+        # want the HTML shell, so the catch-all returns a bare 404 — crucially
+        # NOT a 401, i.e. it still never reaches the auth-protected API router.
+        img = client.get("/admin/favicon.ico", headers={"Accept": "image/*"})
+        assert img.status_code == 404
+
+
+def test_admin_spa_index_accept_header_is_case_insensitive(
+    gateway_config: GatewayConfig,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """An unusual client sending ``Text/HTML`` still gets the shell, not the
+    bare-404 / auth path."""
+    _make_dist(tmp_path, monkeypatch)
+    with TestClient(build_app(gateway_config)) as client:
+        resp = client.get("/admin/some/route", headers={"Accept": "Text/HTML"})
+        assert resp.status_code == 200
+        assert "Admin UI" in resp.text
+
+
+def test_admin_route_ordering_contract(
+    gateway_config: GatewayConfig,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """Guard the manual app.router.routes surgery: the /admin redirect must be
+    matched before the API routers, and the SPA catch-all after them. Detects
+    regressions from Starlette/FastAPI upgrades or future route re-ordering."""
+    _make_dist(tmp_path, monkeypatch)
+    app = build_app(gateway_config)
+    paths = [getattr(r, "path", None) for r in app.router.routes]
+    redirect_idx = paths.index("/admin")
+    catchall_idx = paths.index("/admin/{rest_of_path:path}")
+    api_idxs = [i for i, p in enumerate(paths) if p and p.startswith("/admin/health")]
+    assert api_idxs, "expected an /admin/health API route to be registered"
+    assert redirect_idx < min(api_idxs), "redirect must win over API routers"
+    assert catchall_idx > max(api_idxs), "catch-all must be the last resort"
 
 
 def test_admin_ui_absent_is_noop(gateway_config: GatewayConfig, monkeypatch) -> None:
