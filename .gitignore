@@ -51,6 +51,7 @@ mcps/
 concierge-runtime-config.db*
 data/
 /NUL
+.bridgespace/admin-e2e-runs/
 !.env.example
 
 # local MCP helper scratch (BridgeMind board access)
