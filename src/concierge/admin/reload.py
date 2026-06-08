@@ -24,6 +24,11 @@ class ReloadError(Exception):
         super().__init__(f"{code}: {message}")
 
 
+# GatewayService attributes that are wired once at build_app time and must NOT
+# be overwritten during a hot-reload swap.  Everything else is swappable.
+_SERVICE_STABLE_ATTRS: frozenset[str] = frozenset({"sessions", "audit", "bus", "primitives"})
+
+
 @dataclass
 class RuntimeBundle:
     """Swappable gateway runtime handles built from one GatewayConfig."""
@@ -37,6 +42,7 @@ class RuntimeBundle:
     service: Any
     output_filter: Any | None = None
     rate_limiter: Any | None = None
+    approval_store: Any | None = None
 
     async def start(self) -> None:
         await self.adapters.start_all()
@@ -52,12 +58,78 @@ class RuntimeBundle:
         for adapter in self.adapters.all():
             await self.adapters.refresh_server(adapter.server_id)
 
+    def swap_into(self, state: Any) -> None:
+        """Atomically update live app.state handles from this bundle.
+
+        Catalog: the existing Catalog object's store is replaced so callers
+        holding a reference to the old Catalog continue to work.
+        AdapterManager / ProfileRegistry: same in-place replacement of the
+        internal dict so existing references see the new state.
+        GatewayService: every instance attribute from the new service is
+        applied except the stable-at-build-time attrs (sessions, audit, bus,
+        primitives) which must not change across reloads.
+        """
+        # ── Catalog ──────────────────────────────────────────────────────────
+        catalog = getattr(state, "catalog", None)
+        if catalog is not None:
+            catalog.store = self.catalog.store
+        else:
+            catalog = self.catalog
+
+        # ── AdapterManager ───────────────────────────────────────────────────
+        adapters = getattr(state, "adapters", None)
+        if adapters is not None:
+            adapters.__dict__.clear()
+            adapters.__dict__.update(self.adapters.__dict__)
+        else:
+            adapters = self.adapters
+
+        # ── ProfileRegistry ──────────────────────────────────────────────────
+        profiles = getattr(state, "profiles", None)
+        if profiles is not None:
+            profiles._profiles = self.profiles._profiles  # type: ignore[attr-defined]
+        else:
+            profiles = self.profiles
+
+        # ── GatewayService ───────────────────────────────────────────────────
+        # Drive from the new service's own __dict__ rather than a hardcoded
+        # list, so a new attribute added to GatewayService is swapped
+        # automatically and can't silently fall through.
+        service = getattr(state, "service", None)
+        if service is not None:
+            for attr, val in vars(self.service).items():
+                if attr in _SERVICE_STABLE_ATTRS:
+                    continue
+                setattr(service, attr, val)
+            # Point the swapped service at the in-place catalog/adapters/profiles
+            # so all three references stay consistent.
+            service.catalog = catalog
+            service.adapters = adapters
+            service.profiles = profiles
+        else:
+            service = self.service
+
+        # ── app.state ────────────────────────────────────────────────────────
+        state.catalog = catalog
+        state.adapters = adapters
+        state.publishing = self.publishing
+        state.profiles = profiles
+        state.service = service
+        state.rate_limiter = self.rate_limiter
+        if self.approval_store is not None:
+            state.approval_store = self.approval_store
+
 
 RuntimeBuilder = Callable[[GatewayConfig], Awaitable[RuntimeBundle]]
 
 
 class RuntimeSwapTarget(Protocol):
-    """Mutable holder (e.g. app.state) that ReloadCoordinator updates on apply."""
+    """Mutable holder (e.g. app.state) that ReloadCoordinator updates on apply.
+
+    Implementations must call ``bundle.swap_into(state)`` or perform an
+    equivalent in-place update.  The :class:`RuntimeBundle.swap_into` helper is
+    the canonical implementation; custom subclasses are for tests only.
+    """
 
     def apply_runtime(self, bundle: RuntimeBundle) -> None: ...
 
@@ -202,7 +274,7 @@ class ReloadCoordinator:
                 return ApplyResult(ok=True, version_id=version_id)
             except Exception as e:  # noqa: BLE001
                 self._active = previous
-                if self.swap_target is not None and previous is not None and swapped:
+                if self.swap_target is not None and previous is not None and swapped:  # noqa: SIM102
                     try:
                         self.swap_target.apply_runtime(previous)
                     except Exception:  # noqa: BLE001
@@ -274,7 +346,7 @@ class ReloadCoordinator:
             failed = self._active
             try:
                 await lkg.start()
-                if self.swap_target is not None:
+                if self.swap_target is not None:  # noqa: SIM102
                     self.swap_target.apply_runtime(lkg)
                 self._active = lkg
                 if failed is not None and failed is not lkg:
