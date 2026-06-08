@@ -18,6 +18,7 @@ from collections.abc import Iterable
 from ..errors import NotPublished, UnknownPrimitive
 from .catalog import Catalog
 from .notifications import NotificationBus
+from .session import SessionManager
 from .types import (
     CatalogEntry,
     PrimitiveType,
@@ -27,9 +28,12 @@ from .types import (
 
 
 class PublishingService:
-    def __init__(self, catalog: Catalog, bus: NotificationBus) -> None:
+    def __init__(
+        self, catalog: Catalog, bus: NotificationBus, sessions: SessionManager | None = None
+    ) -> None:
         self.catalog = catalog
         self.bus = bus
+        self.sessions = sessions
 
     # ------------------------------------------------------------------
     # mutate
@@ -65,6 +69,8 @@ class PublishingService:
             enabled.append(name)
             touched.add(entry.primitive_type)
 
+        if enabled:
+            await self._persist(session)
         self._emit_changed(session.session_id, touched)
         return enabled, skipped
 
@@ -86,6 +92,8 @@ class PublishingService:
                     removed.append(name)
                     touched.add(cand)
                     break
+        if removed:
+            await self._persist(session)
         self._emit_changed(session.session_id, touched)
         return removed
 
@@ -95,6 +103,8 @@ class PublishingService:
             bucket = session.published_set(ptype)
             n += len(bucket)
             bucket.clear()
+        if n:
+            await self._persist(session)
         self._emit_changed(session.session_id, set(PrimitiveType))
         return n
 
@@ -133,6 +143,11 @@ class PublishingService:
         return entry
 
     # ------------------------------------------------------------------
+    async def _persist(self, session: Session) -> None:
+        """Delegate to SessionManager.save() so backends like Redis stay in sync."""
+        if self.sessions is not None:
+            await self.sessions.save(session)
+
     def _emit_changed(self, session_id: str, touched: set[PrimitiveType]) -> None:
         if PrimitiveType.TOOL in touched:
             self.bus.tools_list_changed(session_id)

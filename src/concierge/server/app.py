@@ -460,7 +460,7 @@ def compose_runtime(
     duplicating ~100 lines of identical wiring.
     """
     catalog = _build_catalog_store(config.storage)
-    publishing = PublishingService(catalog, bus)
+    publishing = PublishingService(catalog, bus, sessions=sessions)  # sessions already passed in
     adapters = AdapterManager(
         catalog,
         refresh_interval_s=config.catalog_refresh_interval_s,

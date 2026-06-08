@@ -248,6 +248,7 @@ async def _h_use_profile(
     enabled, skipped = await svc.publishing.enable(session, names, by=f"profile:{name}")
     if name not in session.active_profiles:
         session.active_profiles.append(name)
+        await svc.sessions.save(session)
     svc.audit.tool_enabled(session.session_id, enabled, by=f"profile:{name}")
     return {
         "content": [

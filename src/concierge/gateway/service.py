@@ -136,6 +136,7 @@ class GatewayService:
             enabled, _ = await self.publishing.enable(session, names, by=f"profile:{profile.name}")
             if profile.name not in session.active_profiles:
                 session.active_profiles.append(profile.name)
+                await self.sessions.save(session)
             if enabled:
                 self.audit.tool_enabled(session.session_id, enabled, by=f"profile:{profile.name}")
 
