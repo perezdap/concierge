@@ -96,7 +96,15 @@ def wants_admin_spa_index(request: Request) -> bool:
     """
     if request.method not in ("GET", "HEAD"):
         return False
-    accept = request.headers.get("accept", "")
+    # The bare prefix (no trailing slash) belongs to the 308 redirect route.
+    # The SPA fallback middleware is registered last and so runs outermost; if
+    # it served the shell here it would preempt canonicalization to /admin/ for
+    # real browser (Accept: text/html) requests — the common entry case.
+    if request.url.path == "/admin":
+        return False
+    # Case-insensitive: ``Accept`` is a token-list and a proxy/client may send
+    # ``Text/HTML``; a literal substring check would wrongly route it to the API.
+    accept = request.headers.get("accept", "").lower()
     if "text/html" not in accept:
         return False
     rel = _admin_rel_path(request.url.path)

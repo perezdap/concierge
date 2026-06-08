@@ -952,11 +952,21 @@ def build_app(config: GatewayConfig) -> FastAPI:
             content={"error": exc.to_jsonrpc()},
         )
 
+    # Only advertise a Bearer challenge when a bearer-style credential is
+    # actually accepted. The provider chain (or the legacy ``type``) may select
+    # localhost / mTLS / OIDC, for which ``WWW-Authenticate: Bearer`` is wrong
+    # and can mislead clients.
+    if config.auth.providers:
+        _active_auth = [str(p) for p in config.auth.providers]
+    else:
+        _active_auth = [str(config.auth.type)]
+    _bearer_challenge = any(p in ("bearer", "tenant_token") for p in _active_auth)
+
     @app.exception_handler(Unauthorized)
     async def _unauthorized_handler(request: Request, exc: Unauthorized):  # type: ignore[no-untyped-def]
         # Auth failures are routine (missing/expired tokens, browser probes) and
-        # should never emit a stack trace. Log a single line; return a clean
-        # 401 with a WWW-Authenticate hint.
+        # should never emit a stack trace. Log a single line; return a clean 401
+        # with a WWW-Authenticate hint only when a Bearer scheme is in play.
         _log.info(
             "unauthorized on %s %s from %s: %s",
             request.method,
@@ -964,10 +974,11 @@ def build_app(config: GatewayConfig) -> FastAPI:
             request.client.host if request.client else "?",
             exc.message,
         )
+        headers = {"WWW-Authenticate": "Bearer"} if _bearer_challenge else None
         return JSONResponse(
             status_code=401,
             content={"error": exc.to_jsonrpc()},
-            headers={"WWW-Authenticate": "Bearer"},
+            headers=headers,
         )
 
     # Enforce the Origin allow-list globally, ahead of every route handler, so no

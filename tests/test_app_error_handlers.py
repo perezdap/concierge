@@ -9,11 +9,12 @@ from __future__ import annotations
 
 from fastapi.testclient import TestClient
 
-from concierge.config import GatewayConfig
+from concierge.config import AuthConfig, GatewayConfig
 from concierge.errors import (
     GW_UNAUTHORIZED,
     Forbidden,
     RateLimited,
+    Unauthorized,
     UpstreamTimeout,
 )
 from concierge.server.app import build_app
@@ -33,6 +34,24 @@ def test_unauthenticated_admin_api_returns_clean_401(
         body = resp.json()
         assert body["error"]["code"] == GW_UNAUTHORIZED
         assert "message" in body["error"]
+
+
+def test_unauthorized_omits_bearer_challenge_for_non_bearer_auth() -> None:
+    """A 401 under non-bearer auth (e.g. localhost) must NOT claim a Bearer
+    scheme — that hint is wrong and misleads clients. Raise Unauthorized via a
+    throwaway route so the assertion is independent of the auth provider's own
+    accept/reject logic."""
+    app = build_app(GatewayConfig(auth=AuthConfig(type="localhost")))
+
+    @app.get("/_test/unauth")
+    async def _unauth() -> None:
+        raise Unauthorized("no credential")
+
+    with TestClient(app) as client:
+        resp = client.get("/_test/unauth")
+        assert resp.status_code == 401
+        assert "WWW-Authenticate" not in resp.headers
+        assert resp.json()["error"]["code"] == GW_UNAUTHORIZED
 
 
 def test_valid_token_still_reaches_admin_api(
