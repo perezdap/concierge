@@ -1,4 +1,7 @@
-# Minimal config used by tests — no upstreams, no-auth, default gateway settings.
+# Minimal config used by tests — single stdio echo upstream, no-auth, default
+# gateway settings. The `echo` upstream is required by tests/test_admin_upstreams.py,
+# which mutates this entry as a template for create/update/delete cases.
+# If you remove or rename it, those tests will fail with IndexError.
 gateway:
   host: 127.0.0.1
   port: 8765
@@ -7,3 +10,11 @@ auth:
   type: none
 
 log_level: INFO
+
+upstream_servers:
+  - id: echo
+    transport: stdio
+    command: ["python", "examples/upstream_echo_server.py"]
+    default_risk: low
+    default_tags: ["demo"]
+    default_categories: ["utility"]
