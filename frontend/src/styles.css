@@ -284,6 +284,21 @@ a:hover {
   font-weight: 500;
 }
 
+.preview-table-wrap {
+  max-height: 24rem;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  margin-top: 0.5rem;
+}
+
+.preview-table thead th {
+  position: sticky;
+  top: 0;
+  background: var(--surface);
+  z-index: 1;
+}
+
 .muted-text,
 .hint-text {
   color: var(--muted);

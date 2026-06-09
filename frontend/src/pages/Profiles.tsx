@@ -364,28 +364,37 @@ export default function Profiles() {
                   {preview.matched_count === 0 ? (
                     <p className="bad-text">No catalog entries matched — check selectors.</p>
                   ) : (
-                    <table className="server-table">
-                      <thead>
-                        <tr>
-                          <th>Name</th>
-                          <th>Server</th>
-                          <th>Kind</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {preview.primitives.slice(0, 50).map((e) => (
-                          <tr key={primitiveDisplayName(e)}>
-                            <td>{primitiveDisplayName(e)}</td>
-                            <td>{e.server_id ?? "—"}</td>
-                            <td>{e.primitive_type ?? e.kind ?? "—"}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
+                    <>
+                      <div className="preview-table-wrap">
+                        <table className="server-table preview-table">
+                          <thead>
+                            <tr>
+                              <th>Name</th>
+                              <th>Server</th>
+                              <th>Kind</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {preview.primitives.map((e) => (
+                              <tr key={primitiveDisplayName(e)}>
+                                <td>{primitiveDisplayName(e)}</td>
+                                <td>{e.server_id ?? "—"}</td>
+                                <td>{e.primitive_type ?? e.kind ?? "—"}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                      {preview.primitives.length < preview.canonical_names.length ? (
+                        <p className="muted-text">
+                          Showing {preview.primitives.length} of {preview.canonical_names.length}{" "}
+                          matched (server-side cap reached — narrow selectors to see the rest).
+                        </p>
+                      ) : (
+                        <p className="muted-text">Showing all {preview.primitives.length} matched primitives.</p>
+                      )}
+                    </>
                   )}
-                  {preview.canonical_names.length > 50 ? (
-                    <p className="muted-text">Showing first 50 of {preview.canonical_names.length}.</p>
-                  ) : null}
                 </article>
               ) : null}
             </>
