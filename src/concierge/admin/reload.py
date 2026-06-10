@@ -38,6 +38,69 @@ class RuntimeBundle:
     output_filter: Any | None = None
     rate_limiter: Any | None = None
 
+
+    def swap_into(self, state: Any) -> None:
+        """Atomically update a live ``app.state`` (or any attribute holder) with
+        this bundle's handles.
+
+        Replaces the reflection-based ``_AppRuntimeSwap.__dict__.clear/update``
+        pattern: each attribute is set explicitly so adding a field to
+        ``RuntimeBundle`` or ``GatewayService`` is automatically covered without
+        maintaining a hand-written list.
+        """
+        # Catalog: swap the backing store in-place so existing references stay valid.
+        existing_catalog = getattr(state, "catalog", None)
+        if existing_catalog is not None:
+            existing_catalog.store = self.catalog.store
+            live_catalog = existing_catalog
+        else:
+            live_catalog = self.catalog
+
+        # AdapterManager and ProfileRegistry: replace internals in-place so
+        # existing object references held by route handlers stay valid.
+        for attr in ("adapters", "profiles"):
+            existing = getattr(state, attr, None)
+            new = getattr(self, attr)
+            if existing is not None:
+                existing.__dict__.clear()
+                existing.__dict__.update(new.__dict__)
+                setattr(self, attr, existing)
+
+        _existing_adapters = getattr(state, "adapters", None)
+        live_adapters = _existing_adapters if _existing_adapters is not None else self.adapters
+        _existing_profiles = getattr(state, "profiles", None)
+        live_profiles = _existing_profiles if _existing_profiles is not None else self.profiles
+
+        # GatewayService: update each injected dependency individually so the
+        # object identity held by route handlers stays valid.  The explicit list
+        # here is the declared swap surface — if GatewayService gains a new
+        # injected field, add it here and the swap can't silently drop it.
+        existing_service = getattr(state, "service", None)
+        if existing_service is not None:
+            for dep in (
+                "catalog",
+                "publishing",
+                "adapters",
+                "policy",
+                "profiles",
+                "payload",
+                "output_filter",
+                "approval_store",
+            ):
+                setattr(existing_service, dep, getattr(self.service, dep))
+            # Point back at the in-place-updated live objects.
+            existing_service.catalog = live_catalog
+            existing_service.adapters = live_adapters
+            existing_service.profiles = live_profiles
+
+        state.catalog = live_catalog
+        state.adapters = live_adapters
+        state.publishing = self.publishing
+        state.profiles = live_profiles
+        state.service = existing_service if existing_service is not None else self.service
+        state.rate_limiter = self.rate_limiter
+
+
     async def start(self) -> None:
         await self.adapters.start_all()
 

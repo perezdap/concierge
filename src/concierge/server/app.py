@@ -429,62 +429,17 @@ def _runtime_config_db_path(storage: StorageConfig) -> str:
     return "concierge-runtime-config.db"
 
 
-@dataclass
-class _AppRuntimeSwap:
-    """Applies a ReloadCoordinator bundle onto live ``app.state`` handles."""
+class _AppRuntimeSwapAdapter:
+    """Thin adapter so ReloadCoordinator can call bundle.swap_into(app.state)."""
 
-    app: FastAPI
+    def __init__(self, app: FastAPI) -> None:
+        self._app = app
 
     def apply_runtime(self, bundle: RuntimeBundle) -> None:
-        state = self.app.state
-        catalog = getattr(state, "catalog", None)
-        if catalog is not None:
-            catalog.store = bundle.catalog.store
-        else:
-            catalog = bundle.catalog
-
-        adapters = getattr(state, "adapters", None)
-        if adapters is not None:
-            adapters.__dict__.clear()
-            adapters.__dict__.update(bundle.adapters.__dict__)
-        else:
-            adapters = bundle.adapters
-
-        profiles = getattr(state, "profiles", None)
-        if profiles is not None:
-            profiles.__dict__.clear()
-            profiles.__dict__.update(bundle.profiles.__dict__)
-        else:
-            profiles = bundle.profiles
-
-        service = getattr(state, "service", None)
-        if service is not None:
-            for attr in (
-                "catalog",
-                "publishing",
-                "adapters",
-                "policy",
-                "profiles",
-                "payload",
-                "output_filter",
-                "approval_store",
-            ):
-                setattr(service, attr, getattr(bundle.service, attr))
-            service.catalog = catalog
-            service.adapters = adapters
-            service.profiles = profiles
-        else:
-            service = bundle.service
-
-        state.catalog = catalog
-        state.adapters = adapters
-        state.publishing = bundle.publishing
-        state.profiles = profiles
-        state.service = service
-        state.rate_limiter = bundle.rate_limiter
+        bundle.swap_into(self._app.state)
 
 
-def _assemble_runtime_bundle(
+def compose_runtime(
     config: GatewayConfig,
     *,
     sessions: SessionManager,
@@ -494,9 +449,15 @@ def _assemble_runtime_bundle(
     on_session_evict: Callable[[str], Awaitable[None]],
     auth_header_provider: AuthHeaderProvider | None = None,
 ) -> RuntimeBundle:
-    """Build swappable gateway runtime from a GatewayConfig (hot-reload path)."""
+    """Single composition factory shared by startup and hot-reload.
+
+    Builds catalog, adapters, profiles, policy, and GatewayService from
+    *config* and returns a :class:`RuntimeBundle` ready to be started.
+    Both :func:`build_app` (initial startup) and the reload path call this
+    instead of duplicating ~100 lines of identical wiring.
+    """
     catalog = _build_catalog_store(config.storage)
-    publishing = PublishingService(catalog, bus, sessions=sessions)  # sessions already passed in
+    publishing = PublishingService(catalog, bus, sessions=sessions)
     adapters = AdapterManager(
         catalog,
         refresh_interval_s=config.catalog_refresh_interval_s,
@@ -559,6 +520,7 @@ def _assemble_runtime_bundle(
         block_dangerous_without_approval=config.policy.block_dangerous_without_approval,
         metrics=metrics,
     )
+    output_filter = _build_output_filter(config.output)
     service = GatewayService(
         catalog=catalog,
         publishing=publishing,
@@ -569,7 +531,7 @@ def _assemble_runtime_bundle(
         bus=bus,
         profiles=profile_registry,
         payload=PayloadOptions(**config.payload.model_dump()),
-        output_filter=_build_output_filter(config.output),
+        output_filter=output_filter,
         approval_store=approval_store,
     )
     return RuntimeBundle(
@@ -580,8 +542,30 @@ def _assemble_runtime_bundle(
         profiles=profile_registry,
         policy=policy,
         service=service,
-        output_filter=_build_output_filter(config.output),
+        output_filter=output_filter,
         rate_limiter=rate_limiter,
+    )
+
+
+def _assemble_runtime_bundle(
+    config: GatewayConfig,
+    *,
+    sessions: SessionManager,
+    bus: NotificationBus,
+    audit: AuditLogger,
+    metrics: MetricRegistry,
+    on_session_evict: Callable[[str], Awaitable[None]],
+    auth_header_provider: AuthHeaderProvider | None = None,
+) -> RuntimeBundle:
+    """Hot-reload path: delegates to compose_runtime."""
+    return compose_runtime(
+        config,
+        sessions=sessions,
+        bus=bus,
+        audit=audit,
+        metrics=metrics,
+        on_session_evict=on_session_evict,
+        auth_header_provider=auth_header_provider,
     )
 
 
@@ -717,13 +701,10 @@ def build_app(config: GatewayConfig) -> FastAPI:
         except Exception as _exc:  # noqa: BLE001
             _log.warning("startup-restore: stored config invalid, falling back to YAML: %s", _exc)
 
-    # Core subsystems — sessions built first so it can be passed into PublishingService
-    # at construction time (avoids post-hoc attribute assignment).
+    # Core subsystems — sessions and shared infrastructure built before compose_runtime.
     sessions = _build_session_manager(config)
     sessions.idle_ttl = config.session_pool.idle_ttl_s
-    catalog = _build_catalog_store(config.storage)
     bus = NotificationBus()
-    publishing = PublishingService(catalog, bus, sessions=sessions)
     metrics = MetricRegistry()
     audit_sinks: list[Any] = [MetricAuditSink(metrics)]
     if config.observability.audit_http_sink_url:
@@ -739,90 +720,33 @@ def build_app(config: GatewayConfig) -> FastAPI:
     oauth_service = _build_oauth_service(audit)
     auth_header_provider = OAuthAuthHeaderProvider(oauth_service)
 
-    adapters = AdapterManager(
-        catalog,
-        refresh_interval_s=config.catalog_refresh_interval_s,
-        max_upstream_sessions=config.session_pool.max_upstream_sessions,
-        audit=audit,
-    )
+    # Tearing down a router session also tears down its pooled upstream sessions.
+    # The closure captures `_bundle_ref` which is filled after compose_runtime returns.
+    _bundle_ref: list[RuntimeBundle] = []
 
-    # Tearing down a router session also tears down its pooled upstream sessions,
-    # and records the eviction (and how many upstream sessions it freed).
     async def _on_session_evict(session_id: str) -> None:
-        freed = await adapters.evict_router_session(session_id)
+        freed = await _bundle_ref[0].adapters.evict_router_session(session_id) if _bundle_ref else 0
         audit.session_evicted(session_id, upstream_sessions_freed=freed)
 
-    sessions._on_evict = _on_session_evict
-    for srv in config.upstream_servers:
-        adapter = _wrap_cache(
-            _build_adapter(srv, auth_header_provider=auth_header_provider), config.cache
-        )
-
-        def adapter_factory(s: UpstreamServerConfig = srv) -> UpstreamAdapter:
-            return _wrap_cache(
-                _build_adapter(s, auth_header_provider=auth_header_provider), config.cache
-            )
-
-        adapters.register(
-            adapter,
-            default_risk=srv.default_risk,
-            default_tags=srv.default_tags,
-            default_categories=srv.default_categories,
-            requires_auth=srv.requires_auth,
-            requires_approval_for=srv.requires_approval_for,
-            isolation=srv.isolation,
-            factory=adapter_factory,
-            connect_max_retries=srv.connect_max_retries,
-            connect_backoff_base_s=srv.connect_backoff_base_s,
-            connect_backoff_max_s=srv.connect_backoff_max_s,
-        )
-
-    # Profiles
-    profile_registry = ProfileRegistry()
-    for pcfg in config.profiles:
-        profile_registry.register(Profile(
-            name=pcfg.name,
-            description=pcfg.description,
-            auto_apply=pcfg.auto_apply,
-            selectors=[
-                ProfileSelector(
-                    server=s.server,
-                    tags=s.tags,
-                    categories=s.categories,
-                    primitive_type=None if s.primitive_type is None else
-                        PrimitiveType(s.primitive_type),
-                    names=s.names,
-                )
-                for s in pcfg.selectors
-            ],
-        ))
-
-    # Policy
-    rate_limiter = _build_rate_limiter(config)
-    approval_store = _build_approval_store(config)
-    webhooks = _build_webhook_dispatcher(config, audit)
-    approval_broker = _build_approval(config, approval_store, audit, webhooks)
-    policy = PolicyEngine(
-        rate_limiter=rate_limiter,
-        approval=approval_broker,
-        audit=audit,
-        block_dangerous_without_approval=config.policy.block_dangerous_without_approval,
-        metrics=metrics,
-    )
-
-    service = GatewayService(
-        catalog=catalog,
-        publishing=publishing,
+    _initial_bundle = compose_runtime(
+        config,
         sessions=sessions,
-        adapters=adapters,
-        policy=policy,
-        audit=audit,
         bus=bus,
-        profiles=profile_registry,
-        payload=PayloadOptions(**config.payload.model_dump()),
-        output_filter=_build_output_filter(config.output),
-        approval_store=approval_store,
+        audit=audit,
+        metrics=metrics,
+        on_session_evict=_on_session_evict,
+        auth_header_provider=auth_header_provider,
     )
+    _bundle_ref.append(_initial_bundle)
+
+    catalog = _initial_bundle.catalog
+    adapters = _initial_bundle.adapters
+    publishing = _initial_bundle.publishing
+    profile_registry = _initial_bundle.profiles
+    rate_limiter = _initial_bundle.rate_limiter
+    approval_store = _initial_bundle.service.approval_store
+    approval_broker = _initial_bundle.service.policy.approval
+    service = _initial_bundle.service
     revocation = _build_revocation_store(config)
     tenant_tokens = _build_tenant_token_store(config)
     auth = _build_auth(config, revocation, tenant_tokens)
@@ -1016,7 +940,7 @@ def build_app(config: GatewayConfig) -> FastAPI:
     reload_coordinator = ReloadCoordinator(
         audit=audit,
         build_runtime=_build_runtime,
-        swap_target=_AppRuntimeSwap(app),
+        swap_target=_AppRuntimeSwapAdapter(app),
     )
     upstreams_router = build_admin_upstreams_router(
         AdminUpstreamsDeps(
