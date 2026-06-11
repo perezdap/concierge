@@ -20,7 +20,7 @@ class ProfileSelector:
     tags: list[str] = field(default_factory=list)
     categories: list[str] = field(default_factory=list)
     primitive_type: PrimitiveType | None = None
-    names: list[str] = field(default_factory=list)  # exact canonical names
+    names: list[str] = field(default_factory=list)  # canonical OR upstream names
 
     def matches(self, entry: CatalogEntry) -> bool:
         if self.server and entry.server_id != self.server:
@@ -35,7 +35,10 @@ class ProfileSelector:
             {c.lower() for c in entry.categories}
         ):
             return False
-        if self.names and entry.canonical_name not in self.names:
+        if self.names and (
+            entry.canonical_name not in self.names
+            and entry.upstream_name not in self.names
+        ):
             return False
         return True
 

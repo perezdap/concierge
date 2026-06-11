@@ -14,7 +14,7 @@ from concierge.core.notifications import NotificationBus
 from concierge.core.publishing import PublishingService
 from concierge.core.session import SessionManager
 from concierge.core.types import CatalogEntry, PrimitiveType, RiskLevel, TransportType
-from concierge.gateway.profiles import ProfileRegistry
+from concierge.gateway.profiles import ProfileRegistry, ProfileSelector
 from concierge.gateway.service import GatewayService
 from concierge.policy.approval import DenyByDefaultApprovalBroker
 from concierge.policy.engine import PolicyEngine
@@ -235,6 +235,24 @@ def test_preview_selector_combinations(profile_client: TestClient) -> None:
     assert by_cat["primitives"][0]["categories"] == ["network"]
 
 
+def test_preview_selector_names_accepts_upstream_name(profile_client: TestClient) -> None:
+    catalog = profile_client.app.state.catalog
+    asyncio.run(_seed_catalog(catalog))
+
+    profile_client.post(
+        "/admin/profiles",
+        json={
+            "profile": {
+                "name": "by-upstream-name",
+                "selectors": [{"names": ["dns_lookup"]}],
+            }
+        },
+    )
+    by_upstream = profile_client.post("/admin/profiles/by-upstream-name/preview").json()
+    assert by_upstream["matched_count"] == 1
+    assert by_upstream["canonical_names"] == ["dns__dns_lookup"]
+
+
 def test_apply_promotes_profile_draft(profile_client: TestClient) -> None:
     profile_client.post(
         "/admin/profiles",
@@ -251,3 +269,49 @@ def test_apply_promotes_profile_draft(profile_client: TestClient) -> None:
     active = profile_client.get("/admin/config/active").json()
     names = [p["name"] for p in active["config"]["profiles"]]
     assert "to-apply" in names
+
+
+# ---------------------------------------------------------------------------
+# ProfileSelector.matches() unit tests
+# ---------------------------------------------------------------------------
+
+def _make_entry(
+    upstream_name: str,
+    server: str = "srv",
+) -> CatalogEntry:
+    return CatalogEntry(
+        canonical_name=f"{server}__{upstream_name}",
+        upstream_name=upstream_name,
+        server_id=server,
+        transport=TransportType.STDIO,
+        primitive_type=PrimitiveType.TOOL,
+        display_label=upstream_name,
+        short_description="",
+        tags=[],
+        categories=[],
+        risk_level=RiskLevel.LOW,
+    )
+
+
+def test_selector_names_matches_canonical() -> None:
+    entry = _make_entry("create_task", server="bridgemind")
+    sel = ProfileSelector(names=["bridgemind__create_task"])
+    assert sel.matches(entry)
+
+
+def test_selector_names_matches_upstream() -> None:
+    entry = _make_entry("create_task", server="bridgemind")
+    sel = ProfileSelector(names=["create_task"])
+    assert sel.matches(entry)
+
+
+def test_selector_names_rejects_server_id() -> None:
+    entry = _make_entry("create_task", server="bridgemind")
+    sel = ProfileSelector(names=["bridgemind"])
+    assert not sel.matches(entry)
+
+
+def test_selector_names_empty_is_wildcard() -> None:
+    entry = _make_entry("create_task", server="bridgemind")
+    sel = ProfileSelector(names=[])
+    assert sel.matches(entry)
