@@ -43,6 +43,7 @@ export default function Upstreams() {
   const [source, setSource] = useState<string>("");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [form, setForm] = useState<UpstreamRecord>(emptyUpstream());
+  const [commandText, setCommandText] = useState("");
   const [headersText, setHeadersText] = useState("");
   const [isNew, setIsNew] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -75,6 +76,7 @@ export default function Upstreams() {
     try {
       const res = await api.getUpstream(id);
       setForm(res.upstream);
+      setCommandText(commandToText(res.upstream.command));
       setHeadersText(headersToText(res.upstream.headers));
       setBaselineHeaders({ ...(res.upstream.headers ?? {}) });
     } catch (e) {
@@ -86,6 +88,7 @@ export default function Upstreams() {
     setIsNew(true);
     setSelectedId(null);
     setForm(emptyUpstream());
+    setCommandText("");
     setHeadersText("");
     setBaselineHeaders({});
     setTestResult(null);
@@ -116,6 +119,7 @@ export default function Upstreams() {
       const payload = {
         ...form,
         id: form.id.trim(),
+        command: textToCommand(commandText),
         default_tags: (form.default_tags ?? []).filter(Boolean),
         headers: prepareHeadersForSave(parsedHeaders, baselineHeaders) as unknown as Record<
           string,
@@ -132,6 +136,7 @@ export default function Upstreams() {
       setSelectedId(payload.id);
       const refreshed = await api.getUpstream(payload.id);
       setForm(refreshed.upstream);
+      setCommandText(commandToText(refreshed.upstream.command));
       setHeadersText(headersToText(refreshed.upstream.headers));
       setBaselineHeaders({ ...(refreshed.upstream.headers ?? {}) });
     } catch (e) {
@@ -150,6 +155,7 @@ export default function Upstreams() {
       await api.deleteUpstream(selectedId);
       setSelectedId(null);
       setForm(emptyUpstream());
+      setCommandText("");
       setHeadersText("");
       await loadList();
     } catch (e) {
@@ -176,6 +182,7 @@ export default function Upstreams() {
     try {
       const res = await api.testUpstreamConnection(id, {
         ...form,
+        command: textToCommand(commandText),
         default_tags: (form.default_tags ?? []).filter(Boolean),
         headers: parsedHeaders,
       });
@@ -283,8 +290,8 @@ export default function Upstreams() {
                 {form.transport === "stdio" ? (
                   <FieldLabel label="Command (space-separated)" helpKey="upstreamCommand" className="span-2">
                     <input
-                      value={commandToText(form.command)}
-                      onChange={(e) => patch({ command: textToCommand(e.target.value) })}
+                      value={commandText}
+                      onChange={(e) => setCommandText(e.target.value)}
                     />
                   </FieldLabel>
                 ) : null}

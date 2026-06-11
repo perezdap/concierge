@@ -82,6 +82,54 @@ describe("Upstreams headers textarea", () => {
   });
 });
 
+describe("Upstreams command input", () => {
+  afterEach(() => {
+    cleanup();
+  });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockedApi.listUpstreams.mockResolvedValue({ upstreams: [], source: "draft" });
+    mockedApi.configDraft.mockResolvedValue({ config: null, version: null });
+  });
+
+  async function openCommandInput() {
+    render(<Upstreams />);
+    await waitFor(() => expect(mockedApi.listUpstreams).toHaveBeenCalled());
+    fireEvent.click(screen.getByRole("button", { name: "Add upstream" }));
+    return screen.getByLabelText(/Command \(space-separated\)/i);
+  }
+
+  it("keeps a trailing space while typing argv separators", async () => {
+    const input = await openCommandInput();
+    fireEvent.change(input, { target: { value: "python" } });
+    expect(input).toHaveValue("python");
+    fireEvent.change(input, { target: { value: "python " } });
+    expect(input).toHaveValue("python ");
+    fireEvent.change(input, { target: { value: "python -m my_server" } });
+    expect(input).toHaveValue("python -m my_server");
+  });
+
+  it("parses command argv only when saving", async () => {
+    const input = await openCommandInput();
+    fireEvent.change(screen.getByLabelText("ID"), { target: { value: "demo" } });
+    fireEvent.change(input, { target: { value: "python -m my_server" } });
+    mockedApi.createUpstream.mockResolvedValue({
+      upstream: { id: "demo", transport: "stdio", command: ["python", "-m", "my_server"] },
+    });
+    mockedApi.getUpstream.mockResolvedValue({
+      upstream: { id: "demo", transport: "stdio", command: ["python", "-m", "my_server"] },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save to draft" }));
+    await waitFor(() => expect(mockedApi.createUpstream).toHaveBeenCalled());
+    expect(mockedApi.createUpstream.mock.calls[0][0].command).toEqual([
+      "python",
+      "-m",
+      "my_server",
+    ]);
+  });
+});
+
 describe("Upstreams default tags input", () => {
   afterEach(() => {
     cleanup();
