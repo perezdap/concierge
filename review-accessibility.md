@@ -1,0 +1,14 @@
+- FieldHelp.tsx:10 — `aria-hidden="true"` on wrapper prevents badge from polluting label name (good); `id` on bubble + `aria-describedby` on inputs correct for description semantics.
+- styles.css:492 — `.field-help:hover .field-help-bubble, .form-grid label:focus-within .field-help-bubble, .checkbox-label:focus-within .field-help-bubble` supplies both hover and keyboard visibility; relies on wrapping label receiving focus.
+- Upstreams.tsx:265 — `<span className="field-label-row">` wraps label text + FieldHelp inside original `<label>`; preserves checkbox semantics but slightly changes DOM.
+- Profiles.tsx:261 — Auto-apply checkbox uses `<label className="checkbox-label">`; `.checkbox-label:focus-within` rule ensures tooltip shows on keyboard focus.
+- styles.css:489 — `pointer-events: none` on `.field-help-bubble` prevents mouse interaction with tooltip content (acceptable, pure display).
+- styles.css:469 — Bubble uses `position:absolute; bottom:calc(100%+0.4rem); left:0`; no viewport clipping safeguard or arrow; can be clipped or mis-positioned near container edges.
+- styles.css:476 — Bubble has no explicit background/border contrast guarantee vs `--surface`; inherits color but relies on theme variables (risk if theme changes).
+- FieldHelp.tsx:15 — `onClick={(e) => e.preventDefault()}` swallows clicks to avoid toggling parent checkbox; correct but adds event handler cost on every badge.
+- No explicit `tabindex` or keyboard trap introduced; Focus remains natural inside labels/inputs.
+- Upstreams.tsx:339 — Headers textarea receives `aria-describedby="uh-headers"` directly; FieldHelp sits inside its `<label>` so relationship is unambiguous.
+- Suggested fix styles.css:469 — Add `max-width:22rem; white-space:pre-wrap; word-break:break-word` + `box-shadow` to `.field-help-bubble` to improve readability/overflow handling on small viewports.
+- Suggested fix FieldHelp.tsx:8 — Remove `onClick` handler and rely solely on `pointer-events:none` + `aria-hidden` (simpler, same effect).
+- Suggested fix styles.css:492 — Add `.field-help:focus-within .field-help-bubble` rule so individual help badges themselves can receive focus and trigger their own bubbles (future keyboard-first affordance).
+- No focus-trap or pointer-events blocking other controls observed in current implementation.

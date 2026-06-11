@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { PendingChanges } from "../../components/PendingChanges";
+import { FieldHelp } from "../../components/FieldHelp";
+import { PROFILE_HELP } from "../adminFieldHelp";
 import {
   api,
   ApiError,
@@ -245,10 +247,14 @@ export default function Profiles() {
             <>
               <div className="form-grid">
                 <label>
-                  Name
+                  <span className="field-label-row">
+                    Name
+                    <FieldHelp label="Name" id="ph-name" text={PROFILE_HELP.name} />
+                  </span>
                   <input
                     value={form.name}
                     disabled={!isNew}
+                    aria-describedby="ph-name"
                     onChange={(e) => patch({ name: e.target.value })}
                   />
                 </label>
@@ -256,14 +262,20 @@ export default function Profiles() {
                   <input
                     type="checkbox"
                     checked={Boolean(form.auto_apply)}
+                    aria-describedby="ph-autoapply"
                     onChange={(e) => patch({ auto_apply: e.target.checked })}
                   />
                   Auto-apply at session init
+                  <FieldHelp label="Auto-apply" id="ph-autoapply" text={PROFILE_HELP.autoApply} />
                 </label>
                 <label className="span-2">
-                  Description
+                  <span className="field-label-row">
+                    Description
+                    <FieldHelp label="Description" id="ph-desc" text={PROFILE_HELP.description} />
+                  </span>
                   <input
                     value={form.description ?? ""}
+                    aria-describedby="ph-desc"
                     onChange={(e) => patch({ description: e.target.value })}
                   />
                 </label>
@@ -274,16 +286,28 @@ export default function Profiles() {
                 <div key={i} className="selector-block">
                   <div className="form-grid">
                     <label>
-                      Server
+                      <span className="field-label-row">
+                        Server
+                        <FieldHelp label="Server" id={`ph-${i}-server`} text={PROFILE_HELP.server} />
+                      </span>
                       <input
                         value={sel.server ?? ""}
+                        aria-describedby={`ph-${i}-server`}
                         onChange={(e) => updateSelector(i, { server: e.target.value || null })}
                       />
                     </label>
                     <label>
-                      Primitive type
+                      <span className="field-label-row">
+                        Primitive type
+                        <FieldHelp
+                          label="Primitive type"
+                          id={`ph-${i}-ptype`}
+                          text={PROFILE_HELP.primitiveType}
+                        />
+                      </span>
                       <select
                         value={sel.primitive_type ?? ""}
+                        aria-describedby={`ph-${i}-ptype`}
                         onChange={(e) =>
                           updateSelector(i, {
                             primitive_type: (e.target.value || null) as ProfileSelector["primitive_type"],
@@ -298,23 +322,39 @@ export default function Profiles() {
                       </select>
                     </label>
                     <label className="span-2">
-                      Tags (comma-separated)
+                      <span className="field-label-row">
+                        Tags (comma-separated)
+                        <FieldHelp label="Tags" id={`ph-${i}-tags`} text={PROFILE_HELP.tags} />
+                      </span>
                       <input
                         value={(sel.tags ?? []).join(", ")}
+                        aria-describedby={`ph-${i}-tags`}
                         onChange={(e) => updateSelector(i, { tags: csvToList(e.target.value) })}
                       />
                     </label>
                     <label className="span-2">
-                      Categories (comma-separated)
+                      <span className="field-label-row">
+                        Categories (comma-separated)
+                        <FieldHelp
+                          label="Categories"
+                          id={`ph-${i}-cats`}
+                          text={PROFILE_HELP.categories}
+                        />
+                      </span>
                       <input
                         value={(sel.categories ?? []).join(", ")}
+                        aria-describedby={`ph-${i}-cats`}
                         onChange={(e) => updateSelector(i, { categories: csvToList(e.target.value) })}
                       />
                     </label>
                     <label className="span-2">
-                      Names (comma-separated; canonical form e.g. server__tool, or upstream name e.g. tool)
+                      <span className="field-label-row">
+                        Names (comma-separated; canonical form e.g. server__tool, or upstream name e.g. tool)
+                        <FieldHelp label="Names" id={`ph-${i}-names`} text={PROFILE_HELP.names} />
+                      </span>
                       <input
                         value={(sel.names ?? []).join(", ")}
+                        aria-describedby={`ph-${i}-names`}
                         onChange={(e) => updateSelector(i, { names: csvToList(e.target.value) })}
                       />
                     </label>

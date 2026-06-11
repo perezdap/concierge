@@ -49,10 +49,10 @@ describe("Upstreams headers textarea", () => {
     render(<Upstreams />);
     await waitFor(() => expect(mockedApi.listUpstreams).toHaveBeenCalled());
     fireEvent.click(screen.getByRole("button", { name: "Add upstream" }));
-    fireEvent.change(screen.getByLabelText("Transport"), {
+    fireEvent.change(screen.getByRole("combobox", { name: "Transport" }), {
       target: { value: "streamable_http" },
     });
-    fireEvent.change(screen.getByLabelText("ID"), { target: { value: "demo" } });
+    fireEvent.change(screen.getByRole("textbox", { name: "ID" }), { target: { value: "demo" } });
     return screen.getByPlaceholderText("Authorization: secret_ref:...");
   }
 
@@ -90,7 +90,7 @@ describe("Upstreams default tags input", () => {
     render(<Upstreams />);
     await waitFor(() => expect(mockedApi.listUpstreams).toHaveBeenCalled());
     fireEvent.click(screen.getByRole("button", { name: "Add upstream" }));
-    return screen.getByLabelText("Default tags (comma-separated)");
+    return screen.getByRole("textbox", { name: "Default tags (comma-separated)" });
   }
 
   it("keeps the comma visible while typing a tag separator (regression #498f453d)", async () => {
@@ -104,5 +104,34 @@ describe("Upstreams default tags input", () => {
     expect((input as HTMLInputElement).value).toContain(",");
     fireEvent.change(input, { target: { value: "alpha, beta" } });
     expect(input).toHaveValue("alpha, beta");
+  });
+});
+
+describe("Upstreams headers help badge", () => {
+  afterEach(() => {
+    cleanup();
+  });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockedApi.listUpstreams.mockResolvedValue({ upstreams: [], source: "draft" });
+    mockedApi.configDraft.mockResolvedValue({ config: null, version: null });
+  });
+
+  async function openNewUpstream() {
+    render(<Upstreams />);
+    await waitFor(() => expect(mockedApi.listUpstreams).toHaveBeenCalled());
+    fireEvent.click(screen.getByRole("button", { name: "Add upstream" }));
+    fireEvent.change(screen.getByRole("combobox", { name: "Transport" }), {
+      target: { value: "streamable_http" },
+    });
+    fireEvent.change(screen.getByRole("textbox", { name: "ID" }), { target: { value: "demo" } });
+  }
+
+  it("renders a help badge next to the Headers field", async () => {
+    await openNewUpstream();
+    // The FieldHelp badge attaches data-field to the "?" span so we can locate it.
+    const badge = document.querySelector('[data-field^="Headers"]');
+    expect(badge).not.toBeNull();
   });
 });

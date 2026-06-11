@@ -437,6 +437,66 @@ a:hover {
   color: var(--text) !important;
 }
 
+.field-label-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.field-help {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1rem;
+  height: 1rem;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  color: var(--muted);
+  font-size: 0.7rem;
+  line-height: 1;
+  cursor: help;
+  user-select: none;
+}
+
+.field-help:hover {
+  color: var(--text);
+  border-color: var(--accent);
+}
+
+.field-help-bubble {
+  position: absolute;
+  bottom: calc(100% + 0.4rem);
+  left: 0;
+  z-index: 10;
+  width: max-content;
+  max-width: 22rem;
+  padding: 0.5rem 0.65rem;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 0.8rem;
+  font-weight: 400;
+  line-height: 1.35;
+  white-space: pre-wrap;
+  word-break: break-word;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.12s ease;
+  pointer-events: none;
+}
+
+.field-help:hover .field-help-bubble,
+.form-grid label:focus-within .field-help-bubble,
+.checkbox-label:focus-within .field-help-bubble {
+  opacity: 1;
+  visibility: visible;
+}
+
 .section-heading {
   margin: 1rem 0 0.5rem;
   font-size: 0.95rem;

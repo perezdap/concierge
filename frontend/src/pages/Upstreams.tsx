@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
 import { PendingChanges } from "../../components/PendingChanges";
 import { OAuthConnect } from "../../components/OAuthConnect";
+import { FieldHelp } from "../../components/FieldHelp";
+import { UPSTREAM_HELP } from "../adminFieldHelp";
 import {
   api,
   ApiError,
@@ -260,17 +262,25 @@ export default function Upstreams() {
             <>
               <div className="form-grid">
                 <label>
-                  ID
+                  <span className="field-label-row">
+                    ID
+                    <FieldHelp label="ID" id="uh-id" text={UPSTREAM_HELP.id} />
+                  </span>
                   <input
                     value={form.id}
                     disabled={!isNew}
+                    aria-describedby="uh-id"
                     onChange={(e) => patch({ id: e.target.value })}
                   />
                 </label>
                 <label>
-                  Transport
+                  <span className="field-label-row">
+                    Transport
+                    <FieldHelp label="Transport" id="uh-transport" text={UPSTREAM_HELP.transport} />
+                  </span>
                   <select
                     value={form.transport}
+                    aria-describedby="uh-transport"
                     onChange={(e) => patch({ transport: e.target.value as UpstreamTransport })}
                   >
                     {TRANSPORTS.map((t) => (
@@ -283,9 +293,13 @@ export default function Upstreams() {
 
                 {form.transport === "stdio" ? (
                   <label className="span-2">
-                    Command (space-separated)
+                    <span className="field-label-row">
+                      Command (space-separated)
+                      <FieldHelp label="Command" id="uh-command" text={UPSTREAM_HELP.command} />
+                    </span>
                     <input
                       value={commandToText(form.command)}
+                      aria-describedby="uh-command"
                       onChange={(e) => patch({ command: textToCommand(e.target.value) })}
                     />
                   </label>
@@ -293,9 +307,13 @@ export default function Upstreams() {
 
                 {form.transport === "streamable_http" ? (
                   <label className="span-2">
-                    URL
+                    <span className="field-label-row">
+                      URL
+                      <FieldHelp label="URL" id="uh-url" text={UPSTREAM_HELP.url} />
+                    </span>
                     <input
                       value={form.url ?? ""}
+                      aria-describedby="uh-url"
                       onChange={(e) => patch({ url: e.target.value })}
                     />
                   </label>
@@ -304,16 +322,24 @@ export default function Upstreams() {
                 {form.transport === "sse_legacy" ? (
                   <>
                     <label>
-                      SSE URL
+                      <span className="field-label-row">
+                        SSE URL
+                        <FieldHelp label="SSE URL" id="uh-sse" text={UPSTREAM_HELP.sseUrl} />
+                      </span>
                       <input
                         value={form.sse_url ?? ""}
+                        aria-describedby="uh-sse"
                         onChange={(e) => patch({ sse_url: e.target.value })}
                       />
                     </label>
                     <label>
-                      POST URL
+                      <span className="field-label-row">
+                        POST URL
+                        <FieldHelp label="POST URL" id="uh-post" text={UPSTREAM_HELP.postUrl} />
+                      </span>
                       <input
                         value={form.post_url ?? ""}
+                        aria-describedby="uh-post"
                         onChange={(e) => patch({ post_url: e.target.value })}
                       />
                     </label>
@@ -322,9 +348,13 @@ export default function Upstreams() {
 
                 {form.transport === "custom" ? (
                   <label className="span-2">
-                    Custom kind
+                    <span className="field-label-row">
+                      Custom kind
+                      <FieldHelp label="Custom kind" id="uh-kind" text={UPSTREAM_HELP.customKind} />
+                    </span>
                     <input
                       value={form.custom_kind ?? ""}
+                      aria-describedby="uh-kind"
                       onChange={(e) => patch({ custom_kind: e.target.value })}
                     />
                   </label>
@@ -333,10 +363,14 @@ export default function Upstreams() {
                 {(form.transport === "streamable_http" ||
                   form.transport === "sse_legacy") && (
                   <label className="span-2">
-                    Headers (one per line, values shown redacted from server)
+                    <span className="field-label-row">
+                      Headers (one per line, values shown redacted from server)
+                      <FieldHelp label="Headers" id="uh-headers" text={UPSTREAM_HELP.headers} />
+                    </span>
                     <textarea
                       rows={4}
                       value={headersText}
+                      aria-describedby="uh-headers"
                       onChange={(e) => setHeadersText(e.target.value)}
                       placeholder="Authorization: secret_ref:..."
                     />
@@ -350,9 +384,13 @@ export default function Upstreams() {
                 )}
 
                 <label className="span-2">
-                  Default tags (comma-separated)
+                  <span className="field-label-row">
+                    Default tags (comma-separated)
+                    <FieldHelp label="Default tags" id="uh-tags" text={UPSTREAM_HELP.defaultTags} />
+                  </span>
                   <input
                     value={(form.default_tags ?? []).join(", ")}
+                    aria-describedby="uh-tags"
                     onChange={(e) =>
                       patch({
                         default_tags: e.target.value
