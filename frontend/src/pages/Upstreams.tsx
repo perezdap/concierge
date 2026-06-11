@@ -14,6 +14,7 @@ import {
   prepareHeadersForSave,
   validateHeadersText,
 } from "../upstreamHeaders";
+import { FieldLabel } from "../fieldHelp";
 
 const TRANSPORTS: UpstreamTransport[] = ["stdio", "streamable_http", "sse_legacy", "custom"];
 
@@ -259,16 +260,14 @@ export default function Upstreams() {
           {(isNew || selectedId) && (
             <>
               <div className="form-grid">
-                <label>
-                  ID
+                <FieldLabel label="ID" helpKey="upstreamId">
                   <input
                     value={form.id}
                     disabled={!isNew}
                     onChange={(e) => patch({ id: e.target.value })}
                   />
-                </label>
-                <label>
-                  Transport
+                </FieldLabel>
+                <FieldLabel label="Transport" helpKey="upstreamTransport">
                   <select
                     value={form.transport}
                     onChange={(e) => patch({ transport: e.target.value as UpstreamTransport })}
@@ -279,61 +278,59 @@ export default function Upstreams() {
                       </option>
                     ))}
                   </select>
-                </label>
+                </FieldLabel>
 
                 {form.transport === "stdio" ? (
-                  <label className="span-2">
-                    Command (space-separated)
+                  <FieldLabel label="Command (space-separated)" helpKey="upstreamCommand" className="span-2">
                     <input
                       value={commandToText(form.command)}
                       onChange={(e) => patch({ command: textToCommand(e.target.value) })}
                     />
-                  </label>
+                  </FieldLabel>
                 ) : null}
 
                 {form.transport === "streamable_http" ? (
-                  <label className="span-2">
-                    URL
+                  <FieldLabel label="URL" helpKey="upstreamUrl" className="span-2">
                     <input
                       value={form.url ?? ""}
                       onChange={(e) => patch({ url: e.target.value })}
                     />
-                  </label>
+                  </FieldLabel>
                 ) : null}
 
                 {form.transport === "sse_legacy" ? (
                   <>
-                    <label>
-                      SSE URL
+                    <FieldLabel label="SSE URL" helpKey="upstreamSseUrl">
                       <input
                         value={form.sse_url ?? ""}
                         onChange={(e) => patch({ sse_url: e.target.value })}
                       />
-                    </label>
-                    <label>
-                      POST URL
+                    </FieldLabel>
+                    <FieldLabel label="POST URL" helpKey="upstreamPostUrl">
                       <input
                         value={form.post_url ?? ""}
                         onChange={(e) => patch({ post_url: e.target.value })}
                       />
-                    </label>
+                    </FieldLabel>
                   </>
                 ) : null}
 
                 {form.transport === "custom" ? (
-                  <label className="span-2">
-                    Custom kind
+                  <FieldLabel label="Custom kind" helpKey="upstreamCustomKind" className="span-2">
                     <input
                       value={form.custom_kind ?? ""}
                       onChange={(e) => patch({ custom_kind: e.target.value })}
                     />
-                  </label>
+                  </FieldLabel>
                 ) : null}
 
                 {(form.transport === "streamable_http" ||
                   form.transport === "sse_legacy") && (
-                  <label className="span-2">
-                    Headers (one per line, values shown redacted from server)
+                  <FieldLabel
+                    label="Headers (one per line, values shown redacted from server)"
+                    helpKey="upstreamHeaders"
+                    className="span-2"
+                  >
                     <textarea
                       rows={4}
                       value={headersText}
@@ -346,11 +343,10 @@ export default function Upstreams() {
                         secret_ref on save.
                       </span>
                     ) : null}
-                  </label>
+                  </FieldLabel>
                 )}
 
-                <label className="span-2">
-                  Default tags (comma-separated)
+                <FieldLabel label="Default tags (comma-separated)" helpKey="upstreamDefaultTags" className="span-2">
                   <input
                     value={(form.default_tags ?? []).join(", ")}
                     onChange={(e) =>
@@ -361,7 +357,7 @@ export default function Upstreams() {
                       })
                     }
                   />
-                </label>
+                </FieldLabel>
               </div>
 
               <div className="btn-row">

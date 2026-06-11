@@ -410,12 +410,80 @@ a:hover {
   grid-column: 1 / -1;
 }
 
-.form-grid label {
+.form-grid label,
+.form-grid .field-label-wrap {
   display: flex;
   flex-direction: column;
   gap: 0.3rem;
   font-size: 0.8rem;
   color: var(--muted);
+}
+
+.field-label-wrap > label {
+  display: inline;
+  color: inherit;
+  font-size: inherit;
+}
+
+.field-label-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.field-help {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.field-help-trigger {
+  width: 1.1rem;
+  height: 1.1rem;
+  padding: 0;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  color: var(--muted);
+  font: inherit;
+  font-size: 0.65rem;
+  font-weight: 700;
+  line-height: 1;
+  cursor: help;
+  flex-shrink: 0;
+}
+
+.field-help-trigger:hover,
+.field-help-trigger:focus-visible {
+  border-color: var(--accent-dim);
+  color: var(--accent);
+  outline: none;
+}
+
+.field-help-popover {
+  display: none;
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 0.45rem);
+  transform: translateX(-50%);
+  z-index: 20;
+  width: max-content;
+  max-width: min(22rem, 85vw);
+  padding: 0.55rem 0.65rem;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  color: var(--text);
+  font-size: 0.78rem;
+  line-height: 1.45;
+  font-weight: 400;
+  box-shadow: 0 6px 20px rgb(0 0 0 / 35%);
+  pointer-events: none;
+}
+
+.field-help:hover .field-help-popover,
+.field-help:focus-within .field-help-popover {
+  display: block;
 }
 
 .form-grid input,

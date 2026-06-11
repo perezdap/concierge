@@ -7,6 +7,7 @@ import {
   type ProfileRecord,
   type ProfileSelector,
 } from "../api";
+import { FieldHelp, FieldLabel } from "../fieldHelp";
 
 const PRIMITIVE_TYPES = ["", "tool", "resource", "prompt"] as const;
 
@@ -244,44 +245,43 @@ export default function Profiles() {
           {(isNew || selectedName) && (
             <>
               <div className="form-grid">
-                <label>
-                  Name
+                <FieldLabel label="Name" helpKey="profileName">
                   <input
                     value={form.name}
                     disabled={!isNew}
                     onChange={(e) => patch({ name: e.target.value })}
                   />
-                </label>
+                </FieldLabel>
                 <label className="checkbox-label">
                   <input
                     type="checkbox"
                     checked={Boolean(form.auto_apply)}
                     onChange={(e) => patch({ auto_apply: e.target.checked })}
                   />
-                  Auto-apply at session init
+                  <span className="field-label-row">
+                    Auto-apply at session init
+                    <FieldHelp helpKey="profileAutoApply" />
+                  </span>
                 </label>
-                <label className="span-2">
-                  Description
+                <FieldLabel label="Description" helpKey="profileDescription" className="span-2">
                   <input
                     value={form.description ?? ""}
                     onChange={(e) => patch({ description: e.target.value })}
                   />
-                </label>
+                </FieldLabel>
               </div>
 
               <h3 className="section-heading">Selectors</h3>
               {(form.selectors ?? []).map((sel, i) => (
                 <div key={i} className="selector-block">
                   <div className="form-grid">
-                    <label>
-                      Server
+                    <FieldLabel label="Server" helpKey="selectorServer">
                       <input
                         value={sel.server ?? ""}
                         onChange={(e) => updateSelector(i, { server: e.target.value || null })}
                       />
-                    </label>
-                    <label>
-                      Primitive type
+                    </FieldLabel>
+                    <FieldLabel label="Primitive type" helpKey="selectorPrimitiveType">
                       <select
                         value={sel.primitive_type ?? ""}
                         onChange={(e) =>
@@ -296,28 +296,28 @@ export default function Profiles() {
                           </option>
                         ))}
                       </select>
-                    </label>
-                    <label className="span-2">
-                      Tags (comma-separated)
+                    </FieldLabel>
+                    <FieldLabel label="Tags (comma-separated)" helpKey="selectorTags" className="span-2">
                       <input
                         value={(sel.tags ?? []).join(", ")}
                         onChange={(e) => updateSelector(i, { tags: csvToList(e.target.value) })}
                       />
-                    </label>
-                    <label className="span-2">
-                      Categories (comma-separated)
+                    </FieldLabel>
+                    <FieldLabel label="Categories (comma-separated)" helpKey="selectorCategories" className="span-2">
                       <input
                         value={(sel.categories ?? []).join(", ")}
                         onChange={(e) => updateSelector(i, { categories: csvToList(e.target.value) })}
                       />
-                    </label>
-                    <label className="span-2">
-                      Names (comma-separated; canonical form e.g. server__tool, or upstream name e.g. tool)
+                    <FieldLabel
+                      label="Names (comma-separated; canonical form e.g. server__tool, or upstream name e.g. tool)"
+                      helpKey="selectorNames"
+                      className="span-2"
+                    >
                       <input
                         value={(sel.names ?? []).join(", ")}
                         onChange={(e) => updateSelector(i, { names: csvToList(e.target.value) })}
                       />
-                    </label>
+                    </FieldLabel>
                   </div>
                   <button type="button" className="btn-danger" onClick={() => removeSelector(i)}>
                     Remove selector

@@ -73,6 +73,13 @@ describe("Upstreams headers textarea", () => {
     expect(await screen.findByText('Line 2: expected "Key: Value" format')).toBeInTheDocument();
     expect(mockedApi.createUpstream).not.toHaveBeenCalled();
   });
+
+  it("shows inline help triggers on upstream form fields", async () => {
+    await openNewStreamableUpstream();
+    expect(screen.getByRole("button", { name: /Help: upstreamId/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Help: upstreamUrl/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Help: upstreamHeaders/i })).toBeInTheDocument();
+  });
 });
 
 describe("Upstreams default tags input", () => {
