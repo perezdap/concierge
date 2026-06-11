@@ -15,6 +15,18 @@ EVENT_CONFIG_APPLY = "admin.config.apply"
 EVENT_CONFIG_RELOAD = "admin.config.reload"
 EVENT_CONFIG_ROLLBACK = "admin.config.rollback"
 
+# Injected GatewayService fields refreshed on hot-reload (sessions/audit/bus stay put).
+SWAPPABLE_SERVICE_DEPS: tuple[str, ...] = (
+    "catalog",
+    "publishing",
+    "adapters",
+    "policy",
+    "profiles",
+    "payload",
+    "output_filter",
+    "approval_store",
+)
+
 
 class ReloadError(Exception):
     """Reload pipeline failure with a stable code for API mapping."""
@@ -37,6 +49,54 @@ class RuntimeBundle:
     service: Any
     output_filter: Any | None = None
     rate_limiter: Any | None = None
+
+
+    def swap_into(self, state: Any) -> None:
+        """Update a live ``app.state`` holder with this bundle's config-scoped handles.
+
+        Preserves object identity for catalog, adapters, profiles, and service so
+        route handlers and closures keep valid references.  The incoming bundle
+        is not mutated — its adapters/profiles remain distinct for lifecycle
+        (``start``/``stop``) after :meth:`ReloadCoordinator.apply`.
+
+        Extend :data:`SWAPPABLE_SERVICE_DEPS` when ``GatewayService`` gains a new
+        config-scoped injected field (see ``tests/test_compose_runtime.py``).
+        """
+        # Catalog: swap the backing store in-place so existing references stay valid.
+        existing_catalog = getattr(state, "catalog", None)
+        if existing_catalog is not None:
+            existing_catalog.store = self.catalog.store
+            live_catalog = existing_catalog
+        else:
+            live_catalog = self.catalog
+
+        # AdapterManager and ProfileRegistry: replace internals in-place on state.
+        for attr in ("adapters", "profiles"):
+            existing = getattr(state, attr, None)
+            new = getattr(self, attr)
+            if existing is not None:
+                existing.__dict__.clear()
+                existing.__dict__.update(new.__dict__)
+
+        live_adapters = getattr(state, "adapters", None) or self.adapters
+        live_profiles = getattr(state, "profiles", None) or self.profiles
+
+        # GatewayService: refresh config-scoped deps on the live service object.
+        existing_service = getattr(state, "service", None)
+        if existing_service is not None:
+            for dep in SWAPPABLE_SERVICE_DEPS:
+                setattr(existing_service, dep, getattr(self.service, dep))
+            existing_service.catalog = live_catalog
+            existing_service.adapters = live_adapters
+            existing_service.profiles = live_profiles
+
+        state.catalog = live_catalog
+        state.adapters = live_adapters
+        state.publishing = self.publishing
+        state.profiles = live_profiles
+        state.service = existing_service if existing_service is not None else self.service
+        state.rate_limiter = self.rate_limiter
+
 
     async def start(self) -> None:
         await self.adapters.start_all()
