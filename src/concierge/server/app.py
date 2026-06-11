@@ -10,7 +10,6 @@ import os
 import signal
 from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager, suppress
-from dataclasses import dataclass
 from typing import Any
 
 from fastapi import APIRouter, FastAPI, Request
@@ -429,16 +428,6 @@ def _runtime_config_db_path(storage: StorageConfig) -> str:
     return "concierge-runtime-config.db"
 
 
-class _AppRuntimeSwapAdapter:
-    """Thin adapter so ReloadCoordinator can call bundle.swap_into(app.state)."""
-
-    def __init__(self, app: FastAPI) -> None:
-        self._app = app
-
-    def apply_runtime(self, bundle: RuntimeBundle) -> None:
-        bundle.swap_into(self._app.state)
-
-
 def compose_runtime(
     config: GatewayConfig,
     *,
@@ -544,28 +533,6 @@ def compose_runtime(
         service=service,
         output_filter=output_filter,
         rate_limiter=rate_limiter,
-    )
-
-
-def _assemble_runtime_bundle(
-    config: GatewayConfig,
-    *,
-    sessions: SessionManager,
-    bus: NotificationBus,
-    audit: AuditLogger,
-    metrics: MetricRegistry,
-    on_session_evict: Callable[[str], Awaitable[None]],
-    auth_header_provider: AuthHeaderProvider | None = None,
-) -> RuntimeBundle:
-    """Hot-reload path: delegates to compose_runtime."""
-    return compose_runtime(
-        config,
-        sessions=sessions,
-        bus=bus,
-        audit=audit,
-        metrics=metrics,
-        on_session_evict=on_session_evict,
-        auth_header_provider=auth_header_provider,
     )
 
 
@@ -720,12 +687,14 @@ def build_app(config: GatewayConfig) -> FastAPI:
     oauth_service = _build_oauth_service(audit)
     auth_header_provider = OAuthAuthHeaderProvider(oauth_service)
 
-    # Tearing down a router session also tears down its pooled upstream sessions.
-    # The closure captures `_bundle_ref` which is filled after compose_runtime returns.
-    _bundle_ref: list[RuntimeBundle] = []
+    # Session eviction uses the live AdapterManager.  Identity is stable across
+    # hot-reload because swap_into merges adapter internals in-place on state.
+    _live_adapters: AdapterManager | None = None
 
     async def _on_session_evict(session_id: str) -> None:
-        freed = await _bundle_ref[0].adapters.evict_router_session(session_id) if _bundle_ref else 0
+        freed = 0
+        if _live_adapters is not None:
+            freed = await _live_adapters.evict_router_session(session_id)
         audit.session_evicted(session_id, upstream_sessions_freed=freed)
 
     _initial_bundle = compose_runtime(
@@ -737,7 +706,7 @@ def build_app(config: GatewayConfig) -> FastAPI:
         on_session_evict=_on_session_evict,
         auth_header_provider=auth_header_provider,
     )
-    _bundle_ref.append(_initial_bundle)
+    _live_adapters = _initial_bundle.adapters
 
     catalog = _initial_bundle.catalog
     adapters = _initial_bundle.adapters
@@ -927,7 +896,7 @@ def build_app(config: GatewayConfig) -> FastAPI:
     ))
 
     async def _build_runtime(cfg: GatewayConfig) -> RuntimeBundle:
-        return _assemble_runtime_bundle(
+        return compose_runtime(
             cfg,
             sessions=sessions,
             bus=bus,
@@ -937,10 +906,14 @@ def build_app(config: GatewayConfig) -> FastAPI:
             auth_header_provider=auth_header_provider,
         )
 
+    class _AppStateSwap:
+        def apply_runtime(self, bundle: RuntimeBundle) -> None:
+            bundle.swap_into(app.state)
+
     reload_coordinator = ReloadCoordinator(
         audit=audit,
         build_runtime=_build_runtime,
-        swap_target=_AppRuntimeSwapAdapter(app),
+        swap_target=_AppStateSwap(),
     )
     upstreams_router = build_admin_upstreams_router(
         AdminUpstreamsDeps(

@@ -52,9 +52,12 @@ class FakeAdapters:
 @dataclass
 class FakeSwapTarget:
     bundles: list[RuntimeBundle] = field(default_factory=list)
+    state: Any = None
 
     def apply_runtime(self, bundle: RuntimeBundle) -> None:
         self.bundles.append(bundle)
+        if self.state is not None:
+            bundle.swap_into(self.state)
 
 
 def _bundle(
@@ -166,6 +169,75 @@ async def test_apply_swaps_runtime_and_stops_previous() -> None:
     assert coord.active is new
     assert old_adapters.stop_calls == 1
     assert swap.bundles[-1] is new
+
+
+async def test_second_apply_with_swap_into_does_not_stop_live_adapters() -> None:
+    """Two applies through swap_into must not stop adapters still on live state."""
+    audit, _ = _capture_audit()
+    live_adapters = FakeAdapters()
+
+    class LiveCatalog:
+        store = object()
+
+    class LiveProfiles:
+        marker = "live"
+
+    class LiveService:
+        catalog = LiveCatalog()
+        publishing = object()
+        adapters = live_adapters
+        policy = object()
+        profiles = LiveProfiles()
+        payload = object()
+        output_filter = None
+        approval_store = None
+
+    class LiveState:
+        catalog = LiveCatalog()
+        adapters = live_adapters
+        publishing = object()
+        profiles = LiveProfiles()
+        service = LiveService()
+        rate_limiter = object()
+
+    swap = FakeSwapTarget(state=LiveState())
+    first_new = FakeAdapters()
+    second_new = FakeAdapters()
+
+    def _bundle_with_adapters(adapters: FakeAdapters) -> RuntimeBundle:
+        svc = LiveService()
+        svc.adapters = adapters
+        prof = LiveProfiles()
+        return RuntimeBundle(
+            config=GatewayConfig(),
+            catalog=LiveCatalog(),
+            adapters=adapters,
+            publishing=object(),
+            profiles=prof,
+            policy=object(),
+            service=svc,
+        )
+
+    async def build(_cfg: GatewayConfig) -> RuntimeBundle:
+        return _bundle_with_adapters(second_new)
+
+    coord = ReloadCoordinator(audit=audit, build_runtime=build, swap_target=swap)
+    old = _bundle(label="old", adapters=FakeAdapters())
+    coord._active = old  # noqa: SLF001
+    coord._last_known_good = old  # noqa: SLF001
+
+    first = _bundle_with_adapters(first_new)
+    applied1 = await coord.apply(first, version_id="ver-a")
+    assert applied1.ok
+    assert live_adapters.stop_calls == 0
+    assert first_new.stop_calls == 0
+
+    second = _bundle_with_adapters(second_new)
+    applied2 = await coord.apply(second, version_id="ver-b")
+    assert applied2.ok
+    assert live_adapters.stop_calls == 0
+    assert first_new.stop_calls == 1
+    assert second_new.stop_calls == 0
 
 
 async def test_apply_failure_leaves_previous_active() -> None:

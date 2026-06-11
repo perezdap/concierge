@@ -15,6 +15,18 @@ EVENT_CONFIG_APPLY = "admin.config.apply"
 EVENT_CONFIG_RELOAD = "admin.config.reload"
 EVENT_CONFIG_ROLLBACK = "admin.config.rollback"
 
+# Injected GatewayService fields refreshed on hot-reload (sessions/audit/bus stay put).
+SWAPPABLE_SERVICE_DEPS: tuple[str, ...] = (
+    "catalog",
+    "publishing",
+    "adapters",
+    "policy",
+    "profiles",
+    "payload",
+    "output_filter",
+    "approval_store",
+)
+
 
 class ReloadError(Exception):
     """Reload pipeline failure with a stable code for API mapping."""
@@ -40,13 +52,15 @@ class RuntimeBundle:
 
 
     def swap_into(self, state: Any) -> None:
-        """Atomically update a live ``app.state`` (or any attribute holder) with
-        this bundle's handles.
+        """Update a live ``app.state`` holder with this bundle's config-scoped handles.
 
-        Replaces the reflection-based ``_AppRuntimeSwap.__dict__.clear/update``
-        pattern: each attribute is set explicitly so adding a field to
-        ``RuntimeBundle`` or ``GatewayService`` is automatically covered without
-        maintaining a hand-written list.
+        Preserves object identity for catalog, adapters, profiles, and service so
+        route handlers and closures keep valid references.  The incoming bundle
+        is not mutated — its adapters/profiles remain distinct for lifecycle
+        (``start``/``stop``) after :meth:`ReloadCoordinator.apply`.
+
+        Extend :data:`SWAPPABLE_SERVICE_DEPS` when ``GatewayService`` gains a new
+        config-scoped injected field (see ``tests/test_compose_runtime.py``).
         """
         # Catalog: swap the backing store in-place so existing references stay valid.
         existing_catalog = getattr(state, "catalog", None)
@@ -56,39 +70,22 @@ class RuntimeBundle:
         else:
             live_catalog = self.catalog
 
-        # AdapterManager and ProfileRegistry: replace internals in-place so
-        # existing object references held by route handlers stay valid.
+        # AdapterManager and ProfileRegistry: replace internals in-place on state.
         for attr in ("adapters", "profiles"):
             existing = getattr(state, attr, None)
             new = getattr(self, attr)
             if existing is not None:
                 existing.__dict__.clear()
                 existing.__dict__.update(new.__dict__)
-                setattr(self, attr, existing)
 
-        _existing_adapters = getattr(state, "adapters", None)
-        live_adapters = _existing_adapters if _existing_adapters is not None else self.adapters
-        _existing_profiles = getattr(state, "profiles", None)
-        live_profiles = _existing_profiles if _existing_profiles is not None else self.profiles
+        live_adapters = getattr(state, "adapters", None) or self.adapters
+        live_profiles = getattr(state, "profiles", None) or self.profiles
 
-        # GatewayService: update each injected dependency individually so the
-        # object identity held by route handlers stays valid.  The explicit list
-        # here is the declared swap surface — if GatewayService gains a new
-        # injected field, add it here and the swap can't silently drop it.
+        # GatewayService: refresh config-scoped deps on the live service object.
         existing_service = getattr(state, "service", None)
         if existing_service is not None:
-            for dep in (
-                "catalog",
-                "publishing",
-                "adapters",
-                "policy",
-                "profiles",
-                "payload",
-                "output_filter",
-                "approval_store",
-            ):
+            for dep in SWAPPABLE_SERVICE_DEPS:
                 setattr(existing_service, dep, getattr(self.service, dep))
-            # Point back at the in-place-updated live objects.
             existing_service.catalog = live_catalog
             existing_service.adapters = live_adapters
             existing_service.profiles = live_profiles
