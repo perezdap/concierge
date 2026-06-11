@@ -5,7 +5,7 @@ import asyncio
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 
-from ..errors import Unauthorized
+from ..errors import session_unauthorized
 from .types import Session
 
 try:
@@ -56,10 +56,10 @@ class SessionManager:
 
     async def require(self, session_id: str | None) -> Session:
         if not session_id:
-            raise Unauthorized("missing MCP-Session-Id")
+            raise session_unauthorized(reason="session_missing_header")
         s = await self.get(session_id)
         if s is None:
-            raise Unauthorized("unknown or expired session")
+            raise session_unauthorized(reason="session_not_found")
         return s
 
     async def close(self, session_id: str) -> None:

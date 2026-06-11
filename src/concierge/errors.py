@@ -28,6 +28,30 @@ GW_UPSTREAM_CIRCUIT_OPEN = -32012
 GW_UPSTREAM_PROTOCOL = -32013
 GW_SANITIZATION_FAILED = -32020
 
+SESSION_OPERATOR_HINT = (
+    "Re-run MCP initialize: reload Cursor window, toggle MCP server, or start a "
+    "new chat. If Concierge restarted, all prior session IDs are invalid."
+)
+SESSION_MISSING_HEADER_HINT = (
+    "Call MCP initialize first; the response includes MCP-Session-Id for "
+    "subsequent requests."
+)
+
+_SESSION_DEFAULT_MESSAGES = {
+    "session_not_found": "unknown or expired session",
+    "session_missing_header": "missing MCP-Session-Id",
+}
+
+
+def session_error_data(reason: str) -> dict[str, Any]:
+    """Structured JSON-RPC ``error.data`` for stale or missing MCP sessions."""
+    recoverable = reason == "session_not_found"
+    return {
+        "reason": reason,
+        "recoverable": recoverable,
+        "operator_hint": SESSION_OPERATOR_HINT if recoverable else SESSION_MISSING_HEADER_HINT,
+    }
+
 
 class GatewayError(Exception):
     code: int = JSONRPC_INTERNAL_ERROR
@@ -48,6 +72,14 @@ class GatewayError(Exception):
 class Unauthorized(GatewayError):
     code = GW_UNAUTHORIZED
     message = "unauthorized"
+
+
+def session_unauthorized(*, reason: str, message: str | None = None) -> Unauthorized:
+    """Build ``Unauthorized`` (-32001) with structured session recovery metadata."""
+    return Unauthorized(
+        message or _SESSION_DEFAULT_MESSAGES[reason],
+        data=session_error_data(reason),
+    )
 
 
 class Forbidden(GatewayError):
