@@ -312,7 +312,7 @@ export default function Profiles() {
                       />
                     </label>
                     <label className="span-2">
-                      Names (comma-separated canonical or upstream names)
+                      Names (comma-separated; canonical form e.g. server__tool, or upstream name e.g. tool)
                       <input
                         value={(sel.names ?? []).join(", ")}
                         onChange={(e) => updateSelector(i, { names: csvToList(e.target.value) })}

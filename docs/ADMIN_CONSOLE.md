@@ -127,7 +127,7 @@ Each **Selector** (add/remove with the buttons; a profile may have many):
 | **Primitive type** | `any` · `tool` · `resource` · `prompt` | `any` (blank) applies no type filter. |
 | **Tags** | comma-separated | Entry must carry **all** listed tags (case-insensitive subset). Matches against the entry's `tags` (i.e. the upstream's **Default tags**). Blank = no tag filter. |
 | **Categories** | comma-separated | Same subset semantics as Tags, against the entry's `categories`. Blank = no category filter. |
-| **Names** | comma-separated | A **whitelist of canonical names** (`<upstream-id>__<primitive>`, e.g. `bridgemind__create_task`), matched exactly. Blank = any name. **This is not a label or an upstream id** — see the trap below. |
+| **Names** | comma-separated | A **whitelist of primitive names** matched against either the canonical form (`<upstream-id>__<primitive>`, e.g. `bridgemind__create_task`) **or** the bare upstream name (`create_task`). Either form works. Blank = any name. **This is not a server/upstream id** — see the trap below. |
 
 Buttons: **Add selector**, **Save to draft**, **Preview**, **Duplicate**
 (existing), **Delete** (existing). **Preview** resolves the selectors against the
@@ -146,29 +146,29 @@ matched no catalog entries"* with the offending fields), and a table of the firs
 - **Tags / Categories** require the entry to contain *all* listed values
   (case-insensitive subset), matched against the values the upstream contributes
   via its Default tags / categories.
-- **Names** matches the entry's `canonical_name` exactly (the `<id>__<primitive>`
-  form shown in the Preview table's **Name** column). The field hint mentions
-  upstream-side names, but the reliable, verified match is the canonical name —
-  copy values straight out of the Preview table.
+- **Names** matches against either the entry's `canonical_name` (the `<id>__<primitive>`
+  form shown in the Preview table's **Name** column) **or** the bare `upstream_name`
+  (e.g. `create_task`). Both forms are accepted — canonical is unambiguous across
+  servers; upstream name is shorter but may collide if two servers expose the same
+  primitive name.
 
 #### The Names trap (common 0-match cause)
 
-Putting the **upstream's id or display name** into **Names** matches nothing,
-because Names is a whitelist of *primitive* canonical names, not a server label.
-For example:
+Putting the **upstream's id** into **Names** matches nothing, because Names is a
+whitelist of *primitive* names, not a server label. For example:
 
 ```
 Selector
   Server: bridgemind
-  Names:  bridgemind        ← WRONG — this is a primitive-name whitelist
+  Names:  bridgemind        ← WRONG — this is a primitive-name whitelist, not a server id
 ```
 
 Preview returns `Matched 0 primitives` with a warning like
 `selector 0 matched no catalog entries (server=bridgemind, names=['bridgemind'])`.
 
 **Fix:** clear **Names** to publish everything from that server, or list real
-canonical names such as `bridgemind__create_task` (copy them from the Preview
-table).
+primitive names such as `bridgemind__create_task` (canonical) or `create_task`
+(upstream name) — copy canonical names from the Preview table to be safe.
 
 ### Choosing profile shapes
 
