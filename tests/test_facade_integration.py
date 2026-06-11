@@ -52,6 +52,27 @@ def test_tools_list_requires_session(client: TestClient) -> None:
     assert resp.status_code == 200
     err = resp.json()["error"]
     assert err["code"] == -32001
+    assert err["data"]["reason"] == "session_missing_header"
+    assert err["data"]["recoverable"] is False
+    assert err["data"]["operator_hint"]
+
+
+def test_stale_session_returns_structured_error(client: TestClient) -> None:
+    init = _post_mcp(client, _INIT)
+    sid = init.headers["MCP-Session-Id"]
+    del_resp = client.delete("/mcp", headers={"MCP-Session-Id": sid})
+    assert del_resp.status_code == 204
+    resp = _post_mcp(
+        client,
+        {"jsonrpc": "2.0", "id": 3, "method": "tools/list", "params": {}},
+        session_id=sid,
+    )
+    assert resp.status_code == 200
+    err = resp.json()["error"]
+    assert err["code"] == -32001
+    assert err["data"]["reason"] == "session_not_found"
+    assert err["data"]["recoverable"] is True
+    assert "initialize" in err["data"]["operator_hint"].lower()
 
 
 def test_bearer_rejects_unauthenticated_initialize(bearer_client: TestClient) -> None:
@@ -165,7 +186,10 @@ def test_delete_session(client: TestClient) -> None:
         session_id=sid,
     )
     assert again.status_code == 200
-    assert again.json()["error"]["code"] == -32001
+    err = again.json()["error"]
+    assert err["code"] == -32001
+    assert err["data"]["reason"] == "session_not_found"
+    assert err["data"]["recoverable"] is True
 
 
 def test_batch_invalid_item_returns_parse_error(client: TestClient) -> None:

@@ -35,6 +35,8 @@ from ..errors import (
     JSONRPC_PARSE_ERROR,
     GatewayError,
     Unauthorized,
+    session_error_data,
+    session_unauthorized,
 )
 from ..gateway.service import SUPPORTED_PROTOCOL_VERSIONS, GatewayService
 from ..util.log import get_logger
@@ -142,14 +144,14 @@ def build_facade_router(
         if session_header:
             s = await sessions.get(session_header)
             if s is None:
-                raise Unauthorized("unknown or expired session")
+                raise session_unauthorized(reason="session_not_found")
             return s
         if allow_create and method == "initialize":
             auth_res = await auth.authenticate(request)
             return await sessions.create(
                 tenant_id=auth_res.tenant_id, auth_subject=auth_res.subject
             )
-        raise Unauthorized("missing MCP-Session-Id")
+        raise session_unauthorized(reason="session_missing_header")
 
     @router.post(path)
     async def handle_post(
@@ -199,7 +201,7 @@ def build_facade_router(
                 await auth.authenticate(request)
             except Unauthorized as e:
                 return JSONResponse(
-                    _jsonrpc_error_response(None, e.code, e.message),
+                    _jsonrpc_error_response(None, e.code, e.message, e.data),
                     status_code=401,
                 )
 
@@ -305,7 +307,13 @@ def build_facade_router(
             raise HTTPException(status_code=400, detail="MCP-Session-Id required")
         session = await sessions.get(mcp_session_id)
         if session is None:
-            raise HTTPException(status_code=404, detail="unknown session")
+            raise HTTPException(
+                status_code=404,
+                detail={
+                    "message": "unknown session",
+                    **session_error_data("session_not_found"),
+                },
+            )
 
         queue = bus.queue_for(session.session_id)
 

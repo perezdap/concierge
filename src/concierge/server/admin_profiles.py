@@ -10,13 +10,18 @@ from dataclasses import dataclass
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field
 
+from ..admin.config_draft import (
+    ApplyDraftError,
+    apply_draft_live,
+    config_for_reads,
+    ensure_draft,
+    validate_profile_dict,
+    validation_error_detail,
+)
 from ..admin.config_store import ConfigStore
-from ..admin.models import ValidationIssue
-from ..admin.models import ValidationResult as StoreValidationResult
-from ..admin.reload import ReloadCoordinator, ReloadError
-from ..config import GatewayConfig, ProfileConfig
+from ..admin.reload import ReloadCoordinator
 from ..core.catalog import Catalog
 from ..core.types import CatalogEntry, PrimitiveType
 from ..gateway.profiles import Profile, ProfileSelector
@@ -37,31 +42,6 @@ class AdminProfilesDeps:
     config_store: ConfigStore
     catalog: Catalog
     reload_coordinator: ReloadCoordinator | None = None
-
-
-def _validation_error_detail(validation: StoreValidationResult) -> dict[str, Any]:
-    return {
-        "code": "validation_failed",
-        "issues": [i.model_dump() for i in validation.issues],
-    }
-
-
-def _validate_profile_dict(data: dict[str, Any]) -> StoreValidationResult:
-    try:
-        ProfileConfig.model_validate(data)
-    except ValidationError as exc:
-        return StoreValidationResult(
-            ok=False,
-            issues=[
-                ValidationIssue(
-                    path=".".join(str(p) for p in err["loc"]),
-                    message=err["msg"],
-                    code=err.get("type"),
-                )
-                for err in exc.errors()
-            ],
-        )
-    return StoreValidationResult(ok=True)
 
 
 def _profile_from_dict(data: dict[str, Any]) -> Profile:
@@ -127,36 +107,6 @@ async def _preview_profile(profile: Profile, catalog: Catalog) -> dict[str, Any]
     }
 
 
-async def _config_for_reads(store: ConfigStore) -> dict[str, Any]:
-    draft = await store.get_draft()
-    if draft is not None:
-        return draft.config
-    active = await store.get_active_version()
-    if active is not None:
-        return active.config
-    return GatewayConfig().model_dump(mode="json")
-
-
-async def _ensure_draft(
-    store: ConfigStore,
-    *,
-    created_by: str | None,
-) -> dict[str, Any]:
-    draft = await store.get_draft()
-    if draft is not None:
-        return draft.config
-    active = await store.get_active_version()
-    if active is not None:
-        base = deepcopy(active.config)
-    else:
-        base = GatewayConfig().model_dump(mode="json")
-    await store.create_or_update_draft(base, created_by=created_by)
-    refreshed = await store.get_draft()
-    if refreshed is None:
-        raise HTTPException(status_code=500, detail="failed to create config draft")
-    return refreshed.config
-
-
 def _find_profile_index(profiles: list[dict[str, Any]], name: str) -> int:
     for i, entry in enumerate(profiles):
         if entry.get("name") == name:
@@ -172,7 +122,7 @@ def build_admin_profiles_router(deps: AdminProfilesDeps) -> APIRouter:
 
     @router.get("")
     async def list_profiles(_auth: AuthResult = Depends(_auth)) -> dict:
-        cfg = await _config_for_reads(deps.config_store)
+        cfg = await config_for_reads(deps.config_store)
         profiles = cfg.get("profiles") or []
         return {
             "profiles": profiles,
@@ -181,7 +131,7 @@ def build_admin_profiles_router(deps: AdminProfilesDeps) -> APIRouter:
 
     @router.get("/{name}")
     async def get_profile(name: str, _auth: AuthResult = Depends(_auth)) -> dict:
-        cfg = await _config_for_reads(deps.config_store)
+        cfg = await config_for_reads(deps.config_store)
         profiles = cfg.get("profiles") or []
         idx = _find_profile_index(profiles, name)
         return {"profile": profiles[idx]}
@@ -194,7 +144,7 @@ def build_admin_profiles_router(deps: AdminProfilesDeps) -> APIRouter:
         profile_name = body.profile.get("name")
         if not profile_name or not isinstance(profile_name, str):
             raise HTTPException(status_code=400, detail="profile.name is required")
-        cfg = await _ensure_draft(
+        cfg = await ensure_draft(
             deps.config_store,
             created_by=auth_result.subject,
         )
@@ -204,11 +154,11 @@ def build_admin_profiles_router(deps: AdminProfilesDeps) -> APIRouter:
                 status_code=409,
                 detail=f"profile already exists: {profile_name}",
             )
-        validation = _validate_profile_dict(body.profile)
+        validation = validate_profile_dict(body.profile)
         if not validation.ok:
             raise HTTPException(
                 status_code=400,
-                detail=_validation_error_detail(validation),
+                detail=validation_error_detail(validation),
             )
         profiles.append(body.profile)
         cfg["profiles"] = profiles
@@ -226,7 +176,7 @@ def build_admin_profiles_router(deps: AdminProfilesDeps) -> APIRouter:
     ) -> dict:
         if body.profile.get("name") not in (None, name):
             raise HTTPException(status_code=400, detail="profile.name must match path")
-        cfg = await _ensure_draft(
+        cfg = await ensure_draft(
             deps.config_store,
             created_by=auth_result.subject,
         )
@@ -234,11 +184,11 @@ def build_admin_profiles_router(deps: AdminProfilesDeps) -> APIRouter:
         idx = _find_profile_index(profiles, name)
         updated = dict(body.profile)
         updated["name"] = name
-        validation = _validate_profile_dict(updated)
+        validation = validate_profile_dict(updated)
         if not validation.ok:
             raise HTTPException(
                 status_code=400,
-                detail=_validation_error_detail(validation),
+                detail=validation_error_detail(validation),
             )
         profiles[idx] = updated
         cfg["profiles"] = profiles
@@ -253,7 +203,7 @@ def build_admin_profiles_router(deps: AdminProfilesDeps) -> APIRouter:
         name: str,
         auth_result: AuthResult = Depends(_auth),
     ) -> dict:
-        cfg = await _ensure_draft(
+        cfg = await ensure_draft(
             deps.config_store,
             created_by=auth_result.subject,
         )
@@ -277,7 +227,7 @@ def build_admin_profiles_router(deps: AdminProfilesDeps) -> APIRouter:
         body: DuplicateProfileRequest,
         auth_result: AuthResult = Depends(_auth),
     ) -> dict:
-        cfg = await _ensure_draft(
+        cfg = await ensure_draft(
             deps.config_store,
             created_by=auth_result.subject,
         )
@@ -290,11 +240,11 @@ def build_admin_profiles_router(deps: AdminProfilesDeps) -> APIRouter:
             )
         copy = deepcopy(profiles[idx])
         copy["name"] = body.new_name
-        validation = _validate_profile_dict(copy)
+        validation = validate_profile_dict(copy)
         if not validation.ok:
             raise HTTPException(
                 status_code=400,
-                detail=_validation_error_detail(validation),
+                detail=validation_error_detail(validation),
             )
         profiles.append(copy)
         cfg["profiles"] = profiles
@@ -316,15 +266,15 @@ def build_admin_profiles_router(deps: AdminProfilesDeps) -> APIRouter:
             data = body.profile
             data["name"] = name
         else:
-            cfg = await _config_for_reads(deps.config_store)
+            cfg = await config_for_reads(deps.config_store)
             profiles = cfg.get("profiles") or []
             idx = _find_profile_index(profiles, name)
             data = profiles[idx]
-        validation = _validate_profile_dict(data)
+        validation = validate_profile_dict(data)
         if not validation.ok:
             raise HTTPException(
                 status_code=400,
-                detail=_validation_error_detail(validation),
+                detail=validation_error_detail(validation),
             )
         profile = _profile_from_dict(data)
         return await _preview_profile(profile, deps.catalog)
@@ -333,34 +283,23 @@ def build_admin_profiles_router(deps: AdminProfilesDeps) -> APIRouter:
     async def apply_profiles_draft(
         auth_result: AuthResult = Depends(_auth),
     ) -> dict:
-        draft = await deps.config_store.get_draft()
-        if draft is None:
-            raise HTTPException(status_code=400, detail="no draft config to apply")
-
-        if deps.reload_coordinator is not None:
-            cfg = GatewayConfig.model_validate(draft.config)
-            try:
-                await deps.reload_coordinator.validate_apply_reload(
-                    cfg,
-                    version_id=draft.id,
-                    subject=auth_result.subject or "",
-                )
-            except ReloadError as e:
-                raise HTTPException(
-                    status_code=400,
-                    detail={"code": "apply_reload_failed", "message": str(e)},
-                ) from e
-
         try:
-            active = await deps.config_store.promote_draft_to_active(
-                created_by=auth_result.subject,
+            active, result = await apply_draft_live(
+                deps.config_store,
+                reload_coordinator=deps.reload_coordinator,
+                subject=auth_result.subject,
             )
-        except ValueError as e:
-            raise HTTPException(status_code=400, detail=str(e)) from e
+        except ApplyDraftError as e:
+            if e.code == "apply_reload_failed":
+                raise HTTPException(
+                    status_code=e.status_code,
+                    detail={"code": e.code, "message": e.message},
+                ) from e
+            raise HTTPException(status_code=e.status_code, detail=e.message) from e
         return {
             "version_id": active.id,
             "applied": True,
-            "reloaded": deps.reload_coordinator is not None,
+            "reloaded": result.reload_coordinator_configured,
         }
 
     return router

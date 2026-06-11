@@ -194,6 +194,7 @@ concierge`.
 
 ## Further reading
 
+- [`mcp-clients.md`](mcp-clients.md) — MCP session lifecycle, stale-session recovery
 - [`ADMIN_CONSOLE.md`](ADMIN_CONSOLE.md) — selector semantics, profile shapes,
   API surface, Vite dev setup
 - [`ARCHITECTURE.md`](ARCHITECTURE.md) §14 — merge model at startup

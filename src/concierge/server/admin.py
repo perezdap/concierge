@@ -14,10 +14,10 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from ..adapters.manager import AdapterManager
+from ..admin.config_draft import ApplyDraftError, apply_draft_live, reload_active_live
 from ..admin.config_store import ConfigStore
 from ..admin.models import ValidationResult as StoreValidationResult
 from ..admin.redaction import redact_config_diff, redact_config_for_api
-from ..config import GatewayConfig
 from ..core.catalog import Catalog
 from ..core.session import SessionManager
 from ..gateway.service import GatewayService
@@ -329,55 +329,23 @@ def build_admin_router(
         auth_result: AuthResult = Depends(_auth_subject),
     ) -> dict:
         store = _require_config_store()
-        created_by = auth_result.subject
-        draft = await store.get_draft()
-        if draft is None:
-            raise HTTPException(status_code=400, detail="no draft config to apply")
-
-        runtime_applied = False
-        if reload_coordinator is not None:
-            cfg = GatewayConfig.model_validate(draft.config)
-            result = await reload_coordinator.validate_for_apply(
-                cfg,
-                version_id=draft.id,
-                subject=auth_result.subject or "",
-            )
-            if not result.ok or result.bundle is None:
-                raise HTTPException(
-                    status_code=400,
-                    detail={"code": "apply_validate_failed", "message": result.error},
-                )
-            bundle = result.bundle
-            try:
-                apply_result = await reload_coordinator.apply(
-                    bundle,
-                    version_id=draft.id,
-                    subject=auth_result.subject or "",
-                )
-                if not apply_result.ok:
-                    raise HTTPException(
-                        status_code=500,
-                        detail={
-                            "code": "apply_runtime_failed",
-                            "message": apply_result.error,
-                        },
-                    )
-                runtime_applied = True
-            except HTTPException:
-                await bundle.stop()
-                raise
-            except Exception as e:  # noqa: BLE001
-                await bundle.stop()
-                raise HTTPException(status_code=500, detail=str(e)) from e
-
         try:
-            active = await store.promote_draft_to_active(created_by=created_by)
-        except ValueError as e:
-            raise HTTPException(status_code=400, detail=str(e)) from e
+            active, result = await apply_draft_live(
+                store,
+                reload_coordinator=reload_coordinator,
+                subject=auth_result.subject,
+            )
+        except ApplyDraftError as e:
+            if e.code == "apply_reload_failed":
+                raise HTTPException(
+                    status_code=e.status_code,
+                    detail={"code": e.code, "message": e.message},
+                ) from e
+            raise HTTPException(status_code=e.status_code, detail=e.message) from e
         return {
             "version": _version_meta(active),
             "applied": True,
-            "runtime_applied": runtime_applied,
+            "runtime_applied": result.runtime_applied,
         }
 
     @router.post("/config/reload", dependencies=[Depends(_auth_dep)])
@@ -387,31 +355,18 @@ def build_admin_router(
         if reload_coordinator is None:
             raise HTTPException(status_code=501, detail="reload coordinator not configured")
         store = _require_config_store()
-        active = await store.get_active_version()
-        if active is None:
-            raise HTTPException(status_code=404, detail="no active config to reload")
-        cfg = GatewayConfig.model_validate(active.config)
-        result = await reload_coordinator.validate_for_apply(
-            cfg,
-            version_id=active.id,
-            subject=auth_result.subject or "",
-        )
-        if not result.ok or result.bundle is None:
-            raise HTTPException(
-                status_code=400,
-                detail={"code": "reload_validate_failed", "message": result.error},
+        try:
+            version_id = await reload_active_live(
+                store,
+                reload_coordinator,
+                subject=auth_result.subject,
             )
-        apply_result = await reload_coordinator.apply(
-            result.bundle,
-            version_id=active.id,
-            subject=auth_result.subject or "",
-        )
-        if not apply_result.ok:
+        except ApplyDraftError as e:
             raise HTTPException(
-                status_code=500,
-                detail={"code": "reload_apply_failed", "message": apply_result.error},
-            )
-        return {"reloaded": True, "version_id": active.id}
+                status_code=e.status_code,
+                detail={"code": e.code, "message": e.message},
+            ) from e
+        return {"reloaded": True, "version_id": version_id}
 
     @router.post("/config/rollback", dependencies=[Depends(_auth_dep)])
     async def rollback_config() -> dict:

@@ -6,21 +6,27 @@ ephemeral adapter without registering on the live AdapterManager.
 from __future__ import annotations
 
 import time
-from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field
 
+from ..adapters.factory import build_adapter
 from ..adapters.manager import AdapterManager
+from ..admin.config_draft import (
+    ApplyDraftError,
+    apply_draft_live,
+    config_for_reads,
+    ensure_draft,
+    validate_upstream_dict,
+    validation_error_detail,
+)
 from ..admin.config_store import ConfigStore
-from ..admin.models import ValidationIssue
-from ..admin.models import ValidationResult as StoreValidationResult
 from ..admin.redaction import redact_config_for_api
-from ..admin.reload import ReloadCoordinator, ReloadError
+from ..admin.reload import ReloadCoordinator
 from ..admin.secrets import merge_write_only_secrets
-from ..config import GatewayConfig, UpstreamServerConfig
+from ..config import UpstreamServerConfig
 from .auth import AuthProvider, AuthResult
 
 
@@ -59,70 +65,6 @@ def _redact_upstream(entry: dict[str, Any]) -> dict[str, Any]:
     return servers[0] if servers else entry
 
 
-def _validation_error_detail(validation: StoreValidationResult) -> dict[str, Any]:
-    return {
-        "code": "validation_failed",
-        "issues": [i.model_dump() for i in validation.issues],
-    }
-
-
-def _validate_upstream_dict(data: dict[str, Any]) -> StoreValidationResult:
-    try:
-        UpstreamServerConfig.model_validate(data)
-    except ValidationError as exc:
-        return StoreValidationResult(
-            ok=False,
-            issues=[
-                ValidationIssue(
-                    path=".".join(str(p) for p in err["loc"]),
-                    message=err["msg"],
-                    code=err.get("type"),
-                )
-                for err in exc.errors()
-            ],
-        )
-    try:
-        from .app import _build_adapter
-
-        _build_adapter(UpstreamServerConfig.model_validate(data))
-    except ValueError as e:
-        return StoreValidationResult(
-            ok=False,
-            issues=[ValidationIssue(path="", message=str(e), code="transport")],
-        )
-    return StoreValidationResult(ok=True)
-
-
-async def _config_for_reads(store: ConfigStore) -> dict[str, Any]:
-    draft = await store.get_draft()
-    if draft is not None:
-        return draft.config
-    active = await store.get_active_version()
-    if active is not None:
-        return active.config
-    return GatewayConfig().model_dump(mode="json")
-
-
-async def _ensure_draft(
-    store: ConfigStore,
-    *,
-    created_by: str | None,
-) -> dict[str, Any]:
-    draft = await store.get_draft()
-    if draft is not None:
-        return draft.config
-    active = await store.get_active_version()
-    if active is not None:
-        base = deepcopy(active.config)
-    else:
-        base = GatewayConfig().model_dump(mode="json")
-    await store.create_or_update_draft(base, created_by=created_by)
-    refreshed = await store.get_draft()
-    if refreshed is None:
-        raise HTTPException(status_code=500, detail="failed to create config draft")
-    return refreshed.config
-
-
 def _find_upstream_index(servers: list[dict[str, Any]], upstream_id: str) -> int:
     for i, entry in enumerate(servers):
         if entry.get("id") == upstream_id:
@@ -138,7 +80,7 @@ def build_admin_upstreams_router(deps: AdminUpstreamsDeps) -> APIRouter:
 
     @router.get("")
     async def list_upstreams(_auth: AuthResult = Depends(_auth)) -> dict:
-        cfg = await _config_for_reads(deps.config_store)
+        cfg = await config_for_reads(deps.config_store)
         servers = cfg.get("upstream_servers") or []
         return {
             "upstreams": [_redact_upstream(s) for s in servers],
@@ -150,7 +92,7 @@ def build_admin_upstreams_router(deps: AdminUpstreamsDeps) -> APIRouter:
         upstream_id: str,
         _auth: AuthResult = Depends(_auth),
     ) -> dict:
-        cfg = await _config_for_reads(deps.config_store)
+        cfg = await config_for_reads(deps.config_store)
         servers = cfg.get("upstream_servers") or []
         idx = _find_upstream_index(servers, upstream_id)
         return {"upstream": _redact_upstream(servers[idx])}
@@ -163,7 +105,7 @@ def build_admin_upstreams_router(deps: AdminUpstreamsDeps) -> APIRouter:
         upstream_id = body.upstream.get("id")
         if not upstream_id or not isinstance(upstream_id, str):
             raise HTTPException(status_code=400, detail="upstream.id is required")
-        cfg = await _ensure_draft(
+        cfg = await ensure_draft(
             deps.config_store,
             created_by=auth_result.subject,
         )
@@ -173,9 +115,9 @@ def build_admin_upstreams_router(deps: AdminUpstreamsDeps) -> APIRouter:
                 status_code=409,
                 detail=f"upstream already exists: {upstream_id}",
             )
-        validation = _validate_upstream_dict(body.upstream)
+        validation = validate_upstream_dict(body.upstream)
         if not validation.ok:
-            raise HTTPException(status_code=400, detail=_validation_error_detail(validation))
+            raise HTTPException(status_code=400, detail=validation_error_detail(validation))
         servers.append(body.upstream)
         cfg["upstream_servers"] = servers
         draft = await deps.config_store.create_or_update_draft(
@@ -192,7 +134,7 @@ def build_admin_upstreams_router(deps: AdminUpstreamsDeps) -> APIRouter:
     ) -> dict:
         if body.upstream.get("id") not in (None, upstream_id):
             raise HTTPException(status_code=400, detail="upstream.id must match path")
-        cfg = await _ensure_draft(
+        cfg = await ensure_draft(
             deps.config_store,
             created_by=auth_result.subject,
         )
@@ -200,9 +142,9 @@ def build_admin_upstreams_router(deps: AdminUpstreamsDeps) -> APIRouter:
         idx = _find_upstream_index(servers, upstream_id)
         merged = merge_write_only_secrets(body.upstream, servers[idx])
         merged["id"] = upstream_id
-        validation = _validate_upstream_dict(merged)
+        validation = validate_upstream_dict(merged)
         if not validation.ok:
-            raise HTTPException(status_code=400, detail=_validation_error_detail(validation))
+            raise HTTPException(status_code=400, detail=validation_error_detail(validation))
         servers[idx] = merged
         cfg["upstream_servers"] = servers
         draft = await deps.config_store.create_or_update_draft(
@@ -216,7 +158,7 @@ def build_admin_upstreams_router(deps: AdminUpstreamsDeps) -> APIRouter:
         upstream_id: str,
         auth_result: AuthResult = Depends(_auth),
     ) -> dict:
-        cfg = await _ensure_draft(
+        cfg = await ensure_draft(
             deps.config_store,
             created_by=auth_result.subject,
         )
@@ -246,11 +188,11 @@ def build_admin_upstreams_router(deps: AdminUpstreamsDeps) -> APIRouter:
             data = body.upstream
             data["id"] = upstream_id
         else:
-            cfg = await _config_for_reads(deps.config_store)
+            cfg = await config_for_reads(deps.config_store)
             servers = cfg.get("upstream_servers") or []
             idx = _find_upstream_index(servers, upstream_id)
             data = servers[idx]
-        result = _validate_upstream_dict(data)
+        result = validate_upstream_dict(data)
         return UpstreamValidateResponse(
             ok=result.ok,
             issues=[i.model_dump() for i in result.issues],
@@ -268,11 +210,11 @@ def build_admin_upstreams_router(deps: AdminUpstreamsDeps) -> APIRouter:
             data = body.upstream
             data["id"] = upstream_id
         else:
-            cfg = await _config_for_reads(deps.config_store)
+            cfg = await config_for_reads(deps.config_store)
             servers = cfg.get("upstream_servers") or []
             idx = _find_upstream_index(servers, upstream_id)
             data = servers[idx]
-        validation = _validate_upstream_dict(data)
+        validation = validate_upstream_dict(data)
         if not validation.ok:
             return TestConnectionResponse(
                 ok=False,
@@ -284,10 +226,8 @@ def build_admin_upstreams_router(deps: AdminUpstreamsDeps) -> APIRouter:
                     else "invalid upstream"
                 ),
             )
-        from .app import _build_adapter
-
         cfg = UpstreamServerConfig.model_validate(data)
-        adapter = _build_adapter(cfg)
+        adapter = build_adapter(cfg)
         started = time.perf_counter()
         try:
             await adapter.connect()
@@ -336,34 +276,23 @@ def build_admin_upstreams_router(deps: AdminUpstreamsDeps) -> APIRouter:
     async def apply_upstream_draft(
         auth_result: AuthResult = Depends(_auth),
     ) -> dict:
-        draft = await deps.config_store.get_draft()
-        if draft is None:
-            raise HTTPException(status_code=400, detail="no draft config to apply")
-
-        if deps.reload_coordinator is not None:
-            cfg = GatewayConfig.model_validate(draft.config)
-            try:
-                await deps.reload_coordinator.validate_apply_reload(
-                    cfg,
-                    version_id=draft.id,
-                    subject=auth_result.subject or "",
-                )
-            except ReloadError as e:
-                raise HTTPException(
-                    status_code=400,
-                    detail={"code": "apply_reload_failed", "message": str(e)},
-                ) from e
-
         try:
-            active = await deps.config_store.promote_draft_to_active(
-                created_by=auth_result.subject,
+            active, result = await apply_draft_live(
+                deps.config_store,
+                reload_coordinator=deps.reload_coordinator,
+                subject=auth_result.subject,
             )
-        except ValueError as e:
-            raise HTTPException(status_code=400, detail=str(e)) from e
+        except ApplyDraftError as e:
+            if e.code == "apply_reload_failed":
+                raise HTTPException(
+                    status_code=e.status_code,
+                    detail={"code": e.code, "message": e.message},
+                ) from e
+            raise HTTPException(status_code=e.status_code, detail=e.message) from e
         return {
             "version_id": active.id,
             "applied": True,
-            "reloaded": deps.reload_coordinator is not None,
+            "reloaded": result.reload_coordinator_configured,
         }
 
     return router

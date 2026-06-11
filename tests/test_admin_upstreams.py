@@ -173,7 +173,7 @@ def test_test_connection_success_mocked(client: TestClient) -> None:
         async def close(self) -> None:
             return None
 
-    with patch("concierge.server.app._build_adapter", return_value=_FakeAdapter()):
+    with patch("concierge.server.admin_upstreams.build_adapter", return_value=_FakeAdapter()):
         resp = client.post(f"/admin/upstreams/{upstream['id']}/test-connection")
     assert resp.status_code == 200
     body = resp.json()
@@ -194,7 +194,7 @@ def test_test_connection_failure_mocked(client: TestClient) -> None:
             return None
 
     with patch(
-        "concierge.server.app._build_adapter",
+        "concierge.server.admin_upstreams.build_adapter",
         return_value=_FailAdapter(),
     ):
         resp = client.post(f"/admin/upstreams/{upstream['id']}/test-connection")

@@ -68,6 +68,7 @@ Concierge also ships a browser admin UI — see [Admin Console](#admin-console) 
 **Troubleshooting**
 - Startup crash → check the logs for empty `${VAR}` warnings; fill the named variable in `.env`.
 - `401 Unauthorized` in the browser → confirm the token pasted into the admin SPA matches `GATEWAY_TOKEN` in `.env`.
+- MCP tools fail with `-32001 unknown or expired session` → stale `MCP-Session-Id`; see [`docs/mcp-clients.md`](docs/mcp-clients.md).
 
 > **Config cheat sheet**: `config/starter.yaml` (local Python, no token), `config/starter.docker.yaml` (Docker, bearer token from `.env`), `config/minimal.yaml` (local echo-server smoke test).
 

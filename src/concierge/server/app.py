@@ -19,11 +19,8 @@ from fastapi.responses import JSONResponse
 from ..adapters.auth_headers import AuthHeaderProvider, OAuthAuthHeaderProvider
 from ..adapters.base import UpstreamAdapter
 from ..adapters.caching import CachingAdapter
-from ..adapters.custom import build_custom_adapter
+from ..adapters.factory import build_adapter
 from ..adapters.manager import AdapterManager
-from ..adapters.sse_legacy import LegacySseAdapter
-from ..adapters.stdio import StdioAdapter
-from ..adapters.streamable_http import StreamableHttpAdapter
 from ..admin.config_store import SqliteConfigStore
 from ..admin.credential_store import UpstreamCredentialStore
 from ..admin.oauth import OAuthPendingStore, UpstreamOAuthService
@@ -155,42 +152,7 @@ def _build_adapter(
     *,
     auth_header_provider: AuthHeaderProvider | None = None,
 ) -> UpstreamAdapter:
-    if cfg.transport == "stdio":
-        if not cfg.command:
-            raise ValueError(f"{cfg.id}: stdio transport requires 'command'")
-        return StdioAdapter(
-            server_id=cfg.id,
-            command=cfg.command,
-            env=cfg.env,
-            cwd=cfg.cwd,
-            request_timeout_s=cfg.request_timeout_s,
-        )
-    if cfg.transport == "streamable_http":
-        if not cfg.url:
-            raise ValueError(f"{cfg.id}: streamable_http transport requires 'url'")
-        return StreamableHttpAdapter(
-            server_id=cfg.id,
-            url=cfg.url,
-            headers=cfg.headers,
-            request_timeout_s=cfg.request_timeout_s,
-            auth_header_provider=auth_header_provider,
-        )
-    if cfg.transport == "sse_legacy":
-        if not cfg.sse_url:
-            raise ValueError(f"{cfg.id}: sse_legacy transport requires 'sse_url'")
-        return LegacySseAdapter(
-            server_id=cfg.id,
-            sse_url=cfg.sse_url,
-            post_url=cfg.post_url,
-            headers=cfg.headers,
-            request_timeout_s=cfg.request_timeout_s,
-            auth_header_provider=auth_header_provider,
-        )
-    if cfg.transport == "custom":
-        if not cfg.custom_kind:
-            raise ValueError(f"{cfg.id}: custom transport requires 'custom_kind'")
-        return build_custom_adapter(cfg.custom_kind, cfg.id, cfg.custom_params)
-    raise ValueError(f"{cfg.id}: unknown transport {cfg.transport}")
+    return build_adapter(cfg, auth_header_provider=auth_header_provider)
 
 
 def _build_revocation_store(cfg: GatewayConfig) -> RevocationStore:
