@@ -308,6 +308,7 @@ export default function Profiles() {
                         value={(sel.categories ?? []).join(", ")}
                         onChange={(e) => updateSelector(i, { categories: csvToList(e.target.value) })}
                       />
+                    </FieldLabel>
                     <FieldLabel
                       label="Names (comma-separated; canonical form e.g. server__tool, or upstream name e.g. tool)"
                       helpKey="selectorNames"

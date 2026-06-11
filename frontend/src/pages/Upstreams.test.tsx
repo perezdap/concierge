@@ -116,6 +116,7 @@ describe("Upstreams command input", () => {
     fireEvent.change(input, { target: { value: "python -m my_server" } });
     mockedApi.createUpstream.mockResolvedValue({
       upstream: { id: "demo", transport: "stdio", command: ["python", "-m", "my_server"] },
+      version_id: "v1",
     });
     mockedApi.getUpstream.mockResolvedValue({
       upstream: { id: "demo", transport: "stdio", command: ["python", "-m", "my_server"] },

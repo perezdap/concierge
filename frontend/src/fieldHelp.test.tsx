@@ -18,4 +18,15 @@ describe("FieldHelp", () => {
     expect(FIELD_HELP.selectorNames).toMatch(/upstream-side name/i);
     expect(FIELD_HELP.selectorNames).toMatch(/not an upstream id/i);
   });
+
+  it("assigns unique tooltip ids when the same help key appears more than once", () => {
+    render(
+      <>
+        <FieldHelp helpKey="selectorTags" />
+        <FieldHelp helpKey="selectorTags" />
+      </>,
+    );
+    const ids = screen.getAllByRole("tooltip").map((node) => node.id);
+    expect(new Set(ids).size).toBe(2);
+  });
 });

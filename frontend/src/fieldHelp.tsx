@@ -53,7 +53,7 @@ type FieldHelpProps = {
 
 export function FieldHelp({ helpKey }: FieldHelpProps) {
   const text = FIELD_HELP[helpKey];
-  const popoverId = `field-help-${helpKey}`;
+  const popoverId = useId();
 
   return (
     <span className="field-help">
