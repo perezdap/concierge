@@ -106,7 +106,9 @@ class SessionPool:
 
         return await asyncio.shield(pending)
 
-    async def _forget_pending(self, key: tuple[str, str], task: asyncio.Task[UpstreamAdapter]) -> None:
+    async def _forget_pending(
+        self, key: tuple[str, str], task: asyncio.Task[UpstreamAdapter]
+    ) -> None:
         async with self._pool_lock:
             if self._pool_pending.get(key) is task:
                 self._pool_pending.pop(key, None)
