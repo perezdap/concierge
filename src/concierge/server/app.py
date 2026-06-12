@@ -609,8 +609,29 @@ def _build_rate_limiter(cfg: GatewayConfig) -> RateLimiter:
     )
 
 
+def _warn_insecure_public_localhost(config: GatewayConfig) -> None:
+    """Surface a startup warning when public binding is paired with localhost auth.
+
+    Inside a container/Pod, traffic via a Service arrives from the cluster network,
+    not loopback, so ``LocalhostAllowAuth`` would 401 every request while probes
+    still pass. This warning is advisory: we do not refuse to start, because the
+    operator may have a sidecar/proxy that terminates loopback-facing traffic.
+    """
+    if not config.gateway.bind_public:
+        return
+    legacy_localhost = config.auth.type == "localhost"
+    chain_localhost = "localhost" in config.auth.providers
+    if legacy_localhost or chain_localhost:
+        _log.warning(
+            "gateway.bind_public=true is combined with auth.type=localhost; "
+            "non-loopback clients will be rejected. Use bearer/OIDC/mTLS auth "
+            "for public-facing deployments."
+        )
+
+
 def build_app(config: GatewayConfig) -> FastAPI:
     configure_logging(config.log_level)
+    _warn_insecure_public_localhost(config)
 
     # Startup-restore: open the config store early so dynamic fields (upstreams,
     # profiles, policy …) applied via the admin panel survive process restarts.
@@ -758,10 +779,11 @@ def build_app(config: GatewayConfig) -> FastAPI:
                 except Exception as e:  # noqa: BLE001
                     _log.warning("redis session store close failed: %s", e)
             # Close the rate-limiter backend (Redis pool, if any) (P1-4).
-            try:
-                await rate_limiter.aclose()
-            except Exception as e:  # noqa: BLE001
-                _log.warning("rate limiter close failed: %s", e)
+            if rate_limiter is not None:
+                try:
+                    await rate_limiter.aclose()
+                except Exception as e:  # noqa: BLE001
+                    _log.warning("rate limiter close failed: %s", e)
             # Close the auth stores (revocation list + tenant tokens) (P1-1) and
             # the approval queue store (P1-3).
             for store, label in (

@@ -306,7 +306,7 @@ def build_admin_oauth_router(deps: AdminOAuthDeps) -> APIRouter:
         request: Request,
         code: str,
         state: str,
-    ) -> dict[str, str]:
+    ) -> HTMLResponse:
         try:
             await deps.oauth.complete_callback(code=code, state=state)
         except ValueError as e:
