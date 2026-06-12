@@ -1,0 +1,337 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Concierge — Production Readiness Plan</title>
+<style>
+  :root{
+    --bg:#0f1115; --panel:#171a21; --panel2:#1d212b; --ink:#e6e9ef; --muted:#9aa4b2;
+    --line:#2a2f3a; --accent:#5b9dff; --p:#46b888;
+    --good:#46b888; --warn:#e0b341; --bad:#e0573a; --crit:#ff5f56;
+    --p0:#ff5f56; --p1:#e0b341; --p2:#5b9dff;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.62 -apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif}
+  .wrap{max-width:1080px;margin:0 auto;padding:40px 24px 80px}
+  h1{font-size:30px;margin:0 0 6px;letter-spacing:-.4px}
+  h2{font-size:22px;margin:46px 0 14px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+  h3{font-size:17px;margin:26px 0 8px}
+  h4{font-size:15px;margin:18px 0 6px;color:var(--ink)}
+  .sub{color:var(--muted);margin:0 0 4px}
+  .meta{color:var(--muted);font-size:13px;margin-bottom:30px}
+  p{margin:10px 0}
+  code{background:#11141a;border:1px solid var(--line);border-radius:4px;padding:1px 6px;font-family:Consolas,Menlo,monospace;font-size:13px;color:#cbd5e1}
+  .mono{font-family:Consolas,Menlo,monospace;font-size:12.5px}
+  .small{font-size:13px;color:var(--muted)}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:20px;margin:16px 0}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:18px}
+  .grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}
+  ul{margin:8px 0;padding-left:20px}
+  li{margin:5px 0}
+  table{width:100%;border-collapse:collapse;margin:14px 0;font-size:13.5px}
+  th,td{text-align:left;padding:9px 11px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{color:var(--muted);font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.5px}
+  .pill{display:inline-block;padding:2px 8px;border-radius:6px;font-size:11px;font-weight:700;letter-spacing:.3px;white-space:nowrap}
+  .p0{background:rgba(255,95,86,.16);color:var(--p0)}
+  .p1{background:rgba(224,179,65,.16);color:var(--p1)}
+  .p2{background:rgba(91,157,255,.16);color:var(--p2)}
+  .sec{background:rgba(255,95,86,.16);color:var(--crit)}
+  .new{background:rgba(70,184,136,.16);color:var(--good)}
+  .planned{background:rgba(91,157,255,.16);color:var(--p2)}
+  .callout{background:var(--panel2);border-left:3px solid var(--accent);border-radius:0 8px 8px 0;padding:16px 18px;margin:18px 0}
+  .callout.exit{border-left-color:var(--p)}
+  .callout.warn{border-left-color:var(--warn)}
+  .ws{border:1px solid var(--line);border-radius:12px;margin:16px 0;overflow:hidden}
+  .ws-head{display:flex;align-items:center;gap:12px;padding:14px 18px;background:var(--panel2)}
+  .ws-head .n{font-weight:700;font-size:16px}
+  .ws-head .eff{margin-left:auto;color:var(--muted);font-size:12.5px}
+  .ws-body{padding:6px 18px 16px}
+  .acc{background:#11141a;border:1px solid var(--line);border-radius:8px;padding:10px 14px;margin-top:10px;font-size:13px}
+  .acc b{color:var(--good)}
+  .kv{display:grid;grid-template-columns:160px 1fr;gap:4px 14px;font-size:13px}
+  .kv .k{color:var(--muted)}
+  .legend{display:flex;gap:18px;flex-wrap:wrap;font-size:12.5px;color:var(--muted);margin:10px 0}
+  .legend span{display:inline-flex;align-items:center;gap:6px}
+  .dot{width:10px;height:10px;border-radius:50%;display:inline-block}
+  .timeline{border-left:2px solid var(--line);margin-left:8px;padding-left:20px}
+  .ms{position:relative;margin:0 0 18px}
+  .ms::before{content:"";position:absolute;left:-27px;top:4px;width:12px;height:12px;border-radius:50%;background:var(--accent);border:2px solid var(--bg)}
+  .ms .t{font-weight:700}
+  hr{border:none;border-top:1px solid var(--line);margin:30px 0}
+  .footer{margin-top:50px;color:var(--muted);font-size:12px;text-align:center}
+  a{color:var(--accent)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>Concierge → Production Readiness Plan</h1>
+  <p class="sub">From working MVP (68/100) to a hardened, deployable gateway &nbsp;·&nbsp; <span class="mono">mcp-gateway-p</span></p>
+  <p class="meta">Companion to the comparative review · 2026-05-29 · This plan turns the review findings plus the project's own <code>docs/ROADMAP.md</code> into a sequenced, acceptance-criteria-driven work plan. Items are tagged <span class="pill sec">SECURITY</span> where they are exploitable, <span class="pill new">NEW</span> where the review surfaced them (not in the existing roadmap), and <span class="pill planned">PLANNED</span> where they extend the author's roadmap.</p>
+
+  <!-- CURRENT STATE -->
+  <div class="callout">
+    <strong>Where it stands today.</strong> A genuinely working MVP: clean inward-pointing layers (<code>core / adapters / gateway / policy / server / util</code>), a faithful catalog→publish→callable→blocked model, best-in-class upstream-metadata sanitization, packaging with a console entry point, 20 passing tests, and good docs. <strong>What blocks production:</strong> two exploitable security bugs, an approval broker that bricks all gated tools, hand-rolled protocol gaps, resource leaks, in-memory-only state (no horizontal scale), no real auth/observability/deploy story, and zero test coverage on the riskiest layers (facade + adapters).
+  </div>
+
+  <!-- DEFINITION OF DONE -->
+  <h2>Definition of "Production Ready"</h2>
+  <p>This plan targets a concrete bar. The gateway is production-ready when it can be exposed to real clients in front of untrusted upstreams and meet all of the following exit criteria:</p>
+  <div class="callout exit">
+    <div class="kv">
+      <span class="k">Security</span><span>No known auth/origin bypass; constant-time secret comparison; TLS-terminated; secrets sourced from env/secret manager, never files; security scan (bandit + pip-audit) clean in CI.</span>
+      <span class="k">Protocol</span><span>Passes a conformance harness: version negotiation, correct 202-for-notifications, header validation, batch handling, error envelopes.</span>
+      <span class="k">Reliability</span><span>No unbounded queues or leaked sessions; graceful drain on SIGTERM; upstream failure isolation with backoff + circuit breaker; survives a soak test.</span>
+      <span class="k">Scale</span><span>Stateless app tier — catalog + sessions in a shared store (Postgres/Redis) so N replicas run behind a load balancer.</span>
+      <span class="k">Operability</span><span><code>/metrics</code> (Prometheus), OpenTelemetry traces, structured + sinkable audit log, <code>/healthz</code> + <code>/readyz</code>, runbook.</span>
+      <span class="k">Quality gate</span><span>CI runs lint (ruff) + type-check (mypy) + tests with ≥80% coverage incl. facade/adapter integration tests; reproducible Docker image; pinned deps.</span>
+      <span class="k">Docs</span><span>No docs/code drift; deploy guide; operator runbook; threat model documented.</span>
+    </div>
+  </div>
+
+  <!-- PRIORITY LEGEND -->
+  <div class="legend">
+    <span><span class="dot" style="background:var(--p0)"></span> <b>P0</b> — blockers / bugs, do before anything else</span>
+    <span><span class="dot" style="background:var(--p1)"></span> <b>P1</b> — production foundations</span>
+    <span><span class="dot" style="background:var(--p2)"></span> <b>P2</b> — scale &amp; enterprise</span>
+  </div>
+
+  <!-- ================= P0 ================= -->
+  <h2><span class="pill p0">P0</span> &nbsp;Blockers &amp; Bug Fixes <span class="small">(≈ 1.5–2 weeks)</span></h2>
+  <p class="small">These are correctness/security defects found in review. None are in the existing roadmap, and every later feature sits on top of them. Each is small in isolation; the value is shipping them as a hardening sprint with tests that lock the behavior.</p>
+
+  <div class="ws">
+    <div class="ws-head"><span class="pill sec">SECURITY</span><span class="n">P0-1 · Fix the origin allow-list bypass</span><span class="eff">~0.5 day</span></div>
+    <div class="ws-body">
+      <p><code>facade.py:47</code> uses <code>origin.startswith(a)</code>, so <code>http://localhost.evil.com</code> passes against an allow-list of <code>http://localhost</code> — a DNS-rebinding vector. Also decide policy for <code>Origin: null</code>/missing (currently allowed unconditionally), since <code>null</code> is what sandboxed pages send.</p>
+      <div class="acc"><b>Done when:</b> origin matching is exact (scheme+host+port, parsed via <code>urllib.parse</code>); a test asserts <code>localhost.evil.com</code> and <code>null</code> are rejected unless explicitly allow-listed.</div>
+    </div>
+  </div>
+
+  <div class="ws">
+    <div class="ws-head"><span class="pill sec">SECURITY</span><span class="n">P0-2 · Constant-time token check + stop leaking token bytes</span><span class="eff">~0.5 day</span></div>
+    <div class="ws-body">
+      <p><code>auth.py:36</code> compares bearer tokens with <code>not in</code> (timing oracle). <code>auth.py:38</code> logs <code>token[:6]</code> into the audit subject.</p>
+      <div class="acc"><b>Done when:</b> comparison uses <code>hmac.compare_digest</code> against hashed tokens; audit subject uses an opaque token id / SHA-256 prefix of a salted hash, never raw token bytes.</div>
+    </div>
+  </div>
+
+  <div class="ws">
+    <div class="ws-head"><span class="pill new">NEW</span><span class="n">P0-3 · Unbrick the approval path</span><span class="eff">~1 day (interim)</span></div>
+    <div class="ws-body">
+      <p>The only registered broker is <code>DenyByDefaultApprovalBroker</code> (always <code>False</code>, <code>app.py:133</code> / <code>approval.py:22</code>), so every <code>requires_approval</code>/<code>dangerous</code> tool is permanently uninvokable. Interim fix now; full workflow is P1-3.</p>
+      <div class="acc"><b>Done when:</b> a config-selectable broker exists (e.g. <code>AllowListApprovalBroker</code> or pre-approved-tool config) so gated tools can be invoked under an explicit operator decision; default stays deny but is documented as such.</div>
+    </div>
+  </div>
+
+  <div class="ws">
+    <div class="ws-head"><span class="pill new">NEW</span><span class="n">P0-4 · MCP protocol conformance</span><span class="eff">~3 days</span></div>
+    <div class="ws-body">
+      <ul>
+        <li>Negotiate <code>protocolVersion</code> instead of hard-coding <code>2025-06-18</code> (<code>service.py:74</code>): echo the client's version if supported, else the server's best, else error.</li>
+        <li>Return <strong>202 Accepted, empty body</strong> for notification-only POSTs (currently 200 + <code>null</code>, <code>facade.py:136–164</code>).</li>
+        <li>Validate the <code>MCP-Protocol-Version</code> request header; handle JSON-RPC batch arrays.</li>
+        <li>Fix the facade docstring that promises an SSE response body it never returns.</li>
+      </ul>
+      <div class="acc"><b>Done when:</b> a conformance test suite (or the official MCP test client) passes for initialize/notify/list/call across supported versions. <em>Strongly consider adopting the official <code>mcp</code> Python SDK</em> to retire the hand-rolled JSON-RPC layer entirely — this also future-proofs spec changes.</div>
+    </div>
+  </div>
+
+  <div class="ws">
+    <div class="ws-head"><span class="pill new">NEW</span><span class="n">P0-5 · Resource-safety fixes (leaks &amp; deadlocks)</span><span class="eff">~2 days</span></div>
+    <div class="ws-body">
+      <ul>
+        <li><b>Bound per-session notification queues</b> (currently unbounded → memory leak per idle session); drop-oldest or backpressure policy.</li>
+        <li><b>Schedule <code>SessionManager.gc</code></b> — it exists but is never called; sessions accumulate forever. Add a periodic task + idle TTL.</li>
+        <li><b>Drain stdio <code>stderr</code></b> (<code>stdio.py:58</code>): a chatty child fills the pipe buffer and deadlocks. Add a stderr reader that logs.</li>
+        <li><b>Fix cross-chunk SSE parsing</b> (<code>streamable_http.py:120</code>, <code>sse_legacy.py:100</code>): buffer across network chunks instead of assuming each <code>data:</code> line is whole.</li>
+      </ul>
+      <div class="acc"><b>Done when:</b> a soak test (1k sessions, chatty stderr, fragmented SSE) shows flat memory and no dropped/garbled messages.</div>
+    </div>
+  </div>
+
+  <div class="ws">
+    <div class="ws-head"><span class="pill new">NEW</span><span class="n">P0-6 · Close docs/code drift + config gaps</span><span class="eff">~1 day</span></div>
+    <div class="ws-body">
+      <ul>
+        <li>Implement <code>${VAR}</code> env-templating in <code>load_config</code> (<code>config.py:89</code>) — it's documented and used in the example YAML but doesn't exist (secrets are passed through literally).</li>
+        <li>Either implement or remove the doc claims for exp-backoff reconnect and <code>callable=false</code> marking (ARCHITECTURE.md promises both; neither exists). See P1-5 for the real implementation.</li>
+        <li>Remove dead code: <code>log.py:39 log_event</code>; reconcile <code>primitives.py:107</code> (<code>names=="*"</code> vs array schema); drop the unnecessary runtime <code>__import__</code> in <code>app.py:117</code>.</li>
+      </ul>
+      <div class="acc"><b>Done when:</b> every feature stated in docs is backed by code or the claim is removed; env-templating has a test; no dead/unreferenced functions.</div>
+    </div>
+  </div>
+
+  <div class="ws">
+    <div class="ws-head"><span class="pill new">NEW</span><span class="n">P0-7 · Quality gate: CI + test the risky layers</span><span class="eff">~3 days</span></div>
+    <div class="ws-body">
+      <p>The 20 existing tests cover pure core logic well but the <strong>facade (auth/origin/session/error-mapping) and real adapters (stdio/http/sse framing) have zero coverage</strong> — exactly where the bugs live.</p>
+      <ul>
+        <li>Add facade integration tests (TestClient): auth accept/reject, origin reject, batch, notification→202, error envelopes.</li>
+        <li>Add adapter framing tests with fake upstreams (stdio newline framing, SSE chunk-boundary, circuit-breaker trip/reset).</li>
+        <li>Stand up CI: <code>ruff</code> (lint) + <code>mypy</code> (type-check) + <code>pytest --cov</code> with an ≥80% gate + <code>bandit</code> + <code>pip-audit</code>.</li>
+      </ul>
+      <div class="acc"><b>Done when:</b> CI is green on every PR, coverage ≥80%, and each P0 fix above ships with a regression test.</div>
+    </div>
+  </div>
+
+  <!-- ================= P1 ================= -->
+  <h2><span class="pill p1">P1</span> &nbsp;Production Foundations <span class="small">(≈ 4–6 weeks · maps to the author's Phase 2)</span></h2>
+  <p class="small">With P0 done, the gateway is <em>correct</em> but still single-process and lab-grade. P1 makes it deployable, scalable, secured, and observable. Most of this is the project's own Phase 2 — sequenced here with operability and deploy work folded in.</p>
+
+  <div class="ws">
+    <div class="ws-head"><span class="pill planned">PLANNED</span><span class="n">P1-1 · Real authentication</span><span class="eff">~1 week</span></div>
+    <div class="ws-body">
+      <p>Replace static bearer tokens with pluggable <code>AuthProvider</code>s: OAuth2/OIDC (any IdP that issues verifiable <code>id_token</code>s), mTLS pass-through for service-to-service, and per-tenant token issuance + revocation list.</p>
+      <div class="acc"><b>Done when:</b> a request is authenticated against a real IdP in an integration test; revoked tokens are rejected; auth provider is config-selectable.</div>
+    </div>
+  </div>
+
+  <div class="ws">
+    <div class="ws-head"><span class="pill planned">PLANNED</span><span class="n">P1-2 · Persistent, shared state (enables horizontal scale)</span><span class="eff">~1–1.5 weeks</span></div>
+    <div class="ws-body">
+      <p>Implement <code>SQLiteCatalogStore</code> and <code>PostgresCatalogStore</code> behind the existing <code>CatalogStore</code> ABC, with a migration runner; add a Redis-backed session store as a drop-in for <code>SessionManager</code>. This is the single biggest lever — the layering already supports it, so the app tier becomes stateless.</p>
+      <div class="acc"><b>Done when:</b> two app replicas behind a load balancer share catalog + sessions; killing one replica mid-session is transparent to the client.</div>
+    </div>
+  </div>
+
+  <div class="ws">
+    <div class="ws-head"><span class="pill planned">PLANNED</span><span class="n">P1-3 · Real approval workflow</span><span class="eff">~1 week</span></div>
+    <div class="ws-body">
+      <p>Replace the P0-3 interim broker with a queue-backed <code>ApprovalBroker</code>: pending approvals surfaced as MCP resources clients can poll, an operator decision path, and webhook callbacks on grant/deny.</p>
+      <div class="acc"><b>Done when:</b> a dangerous tool call parks as pending, an operator grants it out-of-band, and the original call resumes — end-to-end test.</div>
+    </div>
+  </div>
+
+  <div class="ws">
+    <div class="ws-head"><span class="pill planned">PLANNED</span><span class="n">P1-4 · Distributed rate limiting</span><span class="eff">~3 days</span></div>
+    <div class="ws-body">
+      <p>Move the in-memory token bucket to a Redis-backed distributed limiter keyed by <code>(tenant, session, tool)</code>, with per-tenant quotas and a 429-equivalent error carrying <code>Retry-After</code>.</p>
+      <div class="acc"><b>Done when:</b> limits hold consistently across replicas; load test confirms enforcement + correct backoff signaling.</div>
+    </div>
+  </div>
+
+  <div class="ws">
+    <div class="ws-head"><span class="pill new">NEW</span><span class="n">P1-5 · Upstream resilience (deliver on the doc claims)</span><span class="eff">~3 days</span></div>
+    <div class="ws-body">
+      <p>Implement what ARCHITECTURE.md already promises but the code lacks: <strong>exponential-backoff reconnect</strong> for dropped upstreams and <strong><code>callable=false</code> marking</strong> of catalog entries when their upstream is down (so a flapping server degrades gracefully instead of silently shrinking the catalog).</p>
+      <div class="acc"><b>Done when:</b> a killed upstream reconnects with backoff; its tools show as non-callable rather than vanishing; a client gets a clear error, not a hang.</div>
+    </div>
+  </div>
+
+  <div class="ws">
+    <div class="ws-head"><span class="pill planned">PLANNED</span><span class="n">P1-6 · Observability</span><span class="eff">~1 week</span></div>
+    <div class="ws-body">
+      <p>OpenTelemetry traces spanning gateway → adapter → upstream; a Prometheus <code>/metrics</code> endpoint (request rate, latency, upstream health, circuit-breaker state, queue depth); a pluggable audit sink interface (Kafka / S3 / OpenSearch) on top of the existing redacted audit stream; add <code>/healthz</code> + <code>/readyz</code>.</p>
+      <div class="acc"><b>Done when:</b> a single tool call produces an end-to-end trace; dashboards show golden signals; audit events land in an external sink.</div>
+    </div>
+  </div>
+
+  <div class="ws">
+    <div class="ws-head"><span class="pill new">NEW</span><span class="n">P1-7 · Deployment &amp; lifecycle</span><span class="eff">~3 days</span></div>
+    <div class="ws-body">
+      <ul>
+        <li>Reproducible, pinned Docker image (multi-stage, non-root); pin/lock all deps (currently floor-pinned only, e.g. <code>fastapi&gt;=0.110</code>).</li>
+        <li><b>Graceful drain on SIGTERM</b> — stop accepting new sessions, finish in-flight calls, close adapters cleanly (the <code>lifespan</code> hook is a good start).</li>
+        <li>TLS termination guidance (reverse proxy / ingress); config via env + secret manager, never committed files.</li>
+        <li>Sample k8s manifests / compose with liveness/readiness probes wired to P1-6.</li>
+      </ul>
+      <div class="acc"><b>Done when:</b> <code>docker run</code> + a rolling restart drops zero in-flight requests; image passes a vuln scan; no secret ever touches disk.</div>
+    </div>
+  </div>
+
+  <div class="ws">
+    <div class="ws-head"><span class="pill planned">PLANNED</span><span class="n">P1-8 · Output filtering &amp; caching</span><span class="eff">~4 days</span></div>
+    <div class="ws-body">
+      <p>An <code>OutputFilter</code> chain on upstream results (PII scrubbing, secrets detection, length caps, content-type allow-lists) — the response-side complement to the existing input sanitization. A <code>CachingAdapter</code> decorator with per-tool TTL for idempotent read tools.</p>
+      <div class="acc"><b>Done when:</b> a tool returning a fake secret has it redacted before reaching the client; a cached read tool serves a second identical call without hitting the upstream.</div>
+    </div>
+  </div>
+
+  <!-- ================= P2 ================= -->
+  <h2><span class="pill p2">P2</span> &nbsp;Scale &amp; Enterprise <span class="small">(post-launch · maps to the author's Phase 3)</span></h2>
+  <p class="small">Not required for a production launch, but the natural follow-on. These are largely the author's Phase 3, which is sound — listed here for completeness and sequencing.</p>
+  <div class="grid2">
+    <div class="card">
+      <h4>P2-1 · Multi-tenant policy</h4>
+      <p class="small">ABAC <code>TenantPolicyEngine</code> with per-tenant catalog views (tenant A sees only its upstreams). Depends on P1-1/P1-2.</p>
+    </div>
+    <div class="card">
+      <h4>P2-2 · Admin UI</h4>
+      <p class="small">Live catalog browser, session inspector, audit search, approval review — built on the existing <code>/admin/*</code> JSON endpoints.</p>
+    </div>
+    <div class="card">
+      <h4>P2-3 · High availability</h4>
+      <p class="small">Primary/replica failover per upstream, configurable session affinity for sticky routing. (Graceful drain already lands in P1-7.)</p>
+    </div>
+    <div class="card">
+      <h4>P2-4 · Tool-poisoning defense in depth</h4>
+      <p class="small">Cross-source duplicate-name quarantine, heuristic instruction-leak detector on descriptions, operator description overrides. Extends the strong input sanitization.</p>
+    </div>
+    <div class="card">
+      <h4>P2-5 · Resource &amp; prompt parity</h4>
+      <p class="small">Streaming resource passthrough, <code>notifications/resources/updated</code> propagation, prompt-argument validation at the boundary.</p>
+    </div>
+    <div class="card">
+      <h4>P2-6 · Advanced caching / quotas</h4>
+      <p class="small">Leaky-bucket option, per-tenant quotas, smarter cache invalidation — builds on P1-4/P1-8.</p>
+    </div>
+  </div>
+
+  <!-- GAP MAP -->
+  <h2>Gap → Fix Traceability</h2>
+  <p class="small">Every shortfall from the review, mapped to the work item that closes it.</p>
+  <table>
+    <thead><tr><th>Shortfall (review finding)</th><th>Location</th><th>Closed by</th></tr></thead>
+    <tbody>
+      <tr><td>Origin allow-list <code>startswith</code> bypass</td><td class="mono">facade.py:47</td><td>P0-1</td></tr>
+      <tr><td>Non-constant-time token compare + token leak in logs</td><td class="mono">auth.py:36,38</td><td>P0-2</td></tr>
+      <tr><td>Approval broker bricks all gated tools</td><td class="mono">app.py:133 / approval.py:22</td><td>P0-3 → P1-3</td></tr>
+      <tr><td>No <code>protocolVersion</code> negotiation</td><td class="mono">service.py:74</td><td>P0-4</td></tr>
+      <tr><td>Notifications return 200 <code>null</code> not 202</td><td class="mono">facade.py:136–164</td><td>P0-4</td></tr>
+      <tr><td>stdio <code>stderr</code> never drained → deadlock</td><td class="mono">stdio.py:58</td><td>P0-5</td></tr>
+      <tr><td>Cross-chunk SSE lines dropped</td><td class="mono">streamable_http.py:120 / sse_legacy.py:100</td><td>P0-5</td></tr>
+      <tr><td>Unbounded notification queues (mem leak)</td><td class="mono">core/notifications + facade</td><td>P0-5</td></tr>
+      <tr><td>Session GC never scheduled</td><td class="mono">core/session.py</td><td>P0-5</td></tr>
+      <tr><td><code>${VAR}</code> env-templating documented but missing</td><td class="mono">config.py:89</td><td>P0-6</td></tr>
+      <tr><td>Docs claim exp-backoff + <code>callable=false</code> (absent)</td><td class="mono">ARCHITECTURE.md / manager.py</td><td>P0-6 (docs) → P1-5 (impl)</td></tr>
+      <tr><td>Dead code / latent type mismatch</td><td class="mono">log.py:39 · primitives.py:107 · app.py:117</td><td>P0-6</td></tr>
+      <tr><td>Facade + adapter layers untested; no CI</td><td class="mono">tests/ (gap)</td><td>P0-7</td></tr>
+      <tr><td>Static bearer auth only</td><td class="mono">server/auth.py</td><td>P1-1</td></tr>
+      <tr><td>In-memory catalog/sessions → no horizontal scale</td><td class="mono">core/catalog.py · core/session.py</td><td>P1-2</td></tr>
+      <tr><td>In-memory rate limiter only</td><td class="mono">policy/ratelimit.py</td><td>P1-4</td></tr>
+      <tr><td>No metrics / tracing / health endpoints</td><td class="mono">(absent)</td><td>P1-6</td></tr>
+      <tr><td>No Docker / TLS / graceful drain / pinned deps</td><td class="mono">pyproject.toml · deploy (absent)</td><td>P1-7</td></tr>
+      <tr><td>No output-side filtering</td><td class="mono">(absent)</td><td>P1-8</td></tr>
+    </tbody>
+  </table>
+
+  <!-- SEQUENCING -->
+  <h2>Suggested Sequencing</h2>
+  <p class="small">Single-engineer estimate; parallelizes well across two. P0 ships as one hardening release; P1 as a "production beta"; P2 post-GA.</p>
+  <div class="timeline">
+    <div class="ms"><span class="t">Milestone 0 — Hardening release</span> <span class="small">(weeks 1–2)</span><br><span class="small">All of P0. Outcome: correct, secure-enough-to-pilot, CI-gated. This is the prerequisite for everything; do not start P1 features on top of unfixed P0 bugs.</span></div>
+    <div class="ms"><span class="t">Milestone 1 — Stateless &amp; secured</span> <span class="small">(weeks 3–5)</span><br><span class="small">P1-1 (auth), P1-2 (persistence/shared state), P1-5 (resilience). Outcome: multi-replica behind a load balancer with real auth.</span></div>
+    <div class="ms"><span class="t">Milestone 2 — Operable &amp; governed</span> <span class="small">(weeks 6–8)</span><br><span class="small">P1-3 (approval), P1-4 (rate limiting), P1-6 (observability), P1-7 (deploy), P1-8 (output filtering). Outcome: <b>production beta</b> meeting the exit criteria above.</span></div>
+    <div class="ms"><span class="t">Milestone 3 — Enterprise</span> <span class="small">(post-GA)</span><br><span class="small">P2 items as demand dictates (multi-tenant, admin UI, HA failover, deeper poisoning defenses).</span></div>
+  </div>
+  <p class="small">Realistic effort to the production-beta bar (Milestone 2): <strong>~6–8 engineer-weeks</strong> for one engineer, less with two working P0 + test infra in parallel. This is hardening on strong bones — not a rewrite.</p>
+
+  <!-- RISKS -->
+  <h2>Key Risks &amp; Decisions</h2>
+  <div class="card">
+    <ul>
+      <li><strong>Adopt the official MCP SDK or keep hand-rolling?</strong> The hand-rolled JSON-RPC works but every spec change is manual and conformance bugs (P0-4) recur. Recommendation: adopt the SDK during P0-4 while the protocol surface is already open — highest-leverage decision in the plan.</li>
+      <li><strong>State store choice (P1-2) gates scale.</strong> Postgres for catalog + Redis for sessions is the conventional split; doing it early keeps the app tier stateless and avoids a painful retrofit. This is the most architecturally consequential P1 item — sequence it before approval/rate-limit which both assume shared state.</li>
+      <li><strong>Security items are not optional polish.</strong> P0-1/P0-2 are exploitable today; the gateway must not be exposed beyond loopback until they land (the existing <code>__main__</code> loopback rail enforces this — keep it).</li>
+      <li><strong>Test debt is concentrated exactly where the bugs are.</strong> P0-7 (facade/adapter tests + CI) should run alongside, not after, the P0 fixes so each fix is locked by a regression test.</li>
+    </ul>
+  </div>
+
+  <hr>
+  <p class="small">This plan incorporates the project's own <code>docs/ROADMAP.md</code> (Phases 2–3) and supersedes its ordering only by inserting the P0 bug/security fixes ahead of feature work, since several were not captured there. Effort figures are engineering estimates for planning, not commitments.</p>
+  <div class="footer">Concierge (mcp-gateway-p) · Production Readiness Plan · generated 2026-05-29</div>
+</div>
+</body>
+</html>

@@ -470,7 +470,11 @@ class AdapterManager:
             await self._close_lru_victims(victims)
             raise
         except Exception:
-            _log.exception("pooled adapter connect for %s/%s failed", server_id, router_session_id)
+            _log.exception(
+                "pooled adapter connect for %s/%s failed",
+                server_id,
+                router_session_id,
+            )
             if adapter_to_close is not None:
                 await self._safe_close(adapter_to_close)
             if not adapter_transferred:

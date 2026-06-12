@@ -15,6 +15,7 @@ from concierge.server.app import (
     _build_approval_store,
     _build_auth,
     _build_webhook_dispatcher,
+    _warn_insecure_public_localhost,
 )
 from concierge.server.auth import LocalhostAllowAuth, NoAuth, StaticBearerAuth
 
@@ -88,3 +89,23 @@ def test_build_approval_modes():
     assert isinstance(build(allow), AllowListApprovalBroker)
     queue = GatewayConfig(policy=PolicyConfig(approval_mode="queue"))
     assert isinstance(build(queue), QueuedApprovalBroker)
+
+
+def test_warning_on_public_bind_with_localhost_auth(caplog: pytest.LogCaptureFixture) -> None:
+    """Issue #10: bind_public + localhost auth is almost always a misconfiguration."""
+    from concierge.config import GatewayHttpConfig
+
+    cfg = GatewayConfig(
+        gateway=GatewayHttpConfig(bind_public=True),
+        auth=AuthConfig(type="localhost"),
+    )
+    with caplog.at_level("WARNING"):
+        _warn_insecure_public_localhost(cfg)
+    assert "bind_public=true is combined with auth.type=localhost" in caplog.text
+
+
+def test_no_warning_for_public_bind_with_bearer_auth(caplog: pytest.LogCaptureFixture) -> None:
+    cfg = GatewayConfig(auth=AuthConfig(type="bearer", bearer_tokens=["t"]))
+    with caplog.at_level("WARNING"):
+        _warn_insecure_public_localhost(cfg)
+    assert "bind_public=true is combined with auth.type=localhost" not in caplog.text

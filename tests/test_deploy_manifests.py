@@ -80,6 +80,25 @@ def test_configmap_contains_gateway_yaml() -> None:
     assert parsed["gateway"]["bind_public"] is True
 
 
+def test_configmap_uses_bearer_auth_from_secret() -> None:
+    """Issue #10: public-facing k8s manifests must not default to localhost auth."""
+    docs = _load_k8s_documents()
+    configmap = _doc_by_kind(docs, "ConfigMap")
+    gateway_yaml = configmap["data"]["gateway.yaml"]
+    parsed = yaml.safe_load(gateway_yaml)
+
+    assert parsed["auth"]["type"] == "bearer"
+    tokens = parsed["auth"]["bearer_tokens"]
+    assert tokens == ["${CONCIERGE_BEARER_TOKEN}"]
+
+    deployment = _doc_by_kind(docs, "Deployment")
+    container = deployment["spec"]["template"]["spec"]["containers"][0]
+    env = {e["name"]: e for e in container.get("env", [])}
+    assert "CONCIERGE_BEARER_TOKEN" in env
+    token_env = env["CONCIERGE_BEARER_TOKEN"]
+    assert token_env["valueFrom"]["secretKeyRef"] == {"name": "concierge-auth", "key": "token"}
+
+
 def test_deployment_drain_grace_and_prestop() -> None:
     """P1-7: rolling-restart settings let the graceful drain finish."""
     docs = _load_k8s_documents()

@@ -226,8 +226,8 @@ def build_admin_upstreams_router(deps: AdminUpstreamsDeps) -> APIRouter:
                     else "invalid upstream"
                 ),
             )
-        cfg = UpstreamServerConfig.model_validate(data)
-        adapter = build_adapter(cfg)
+        server_cfg = UpstreamServerConfig.model_validate(data)
+        adapter = build_adapter(server_cfg)
         started = time.perf_counter()
         try:
             await adapter.connect()
@@ -239,7 +239,7 @@ def build_admin_upstreams_router(deps: AdminUpstreamsDeps) -> APIRouter:
             return TestConnectionResponse(
                 ok=True,
                 server_id=upstream_id,
-                transport=cfg.transport,
+                transport=server_cfg.transport,
                 connected=True,
                 tools_discovered=len(tools),
                 resources_discovered=len(resources),
@@ -250,7 +250,7 @@ def build_admin_upstreams_router(deps: AdminUpstreamsDeps) -> APIRouter:
             return TestConnectionResponse(
                 ok=False,
                 server_id=upstream_id,
-                transport=cfg.transport,
+                transport=server_cfg.transport,
                 error=str(e),
             )
         finally:
