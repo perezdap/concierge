@@ -26,7 +26,12 @@ from ..errors import (
     UpstreamUnavailable,
 )
 from ..util.log import get_logger
-from ._jsonrpc import build_notification, build_request, unwrap_result
+from ._jsonrpc import (
+    build_notification,
+    request_future,
+    route_incoming_message,
+    wait_for_response,
+)
 from .base import UpstreamAdapter
 
 if TYPE_CHECKING:
@@ -178,49 +183,38 @@ class LegacySseAdapter(UpstreamAdapter):
             msg = json.loads(raw)
         except json.JSONDecodeError:
             return
-        if isinstance(msg, dict) and "id" in msg and msg["id"] in self._pending:
-            self._pending.pop(msg["id"]).set_result(msg)
-            return
-        method = msg.get("method") if isinstance(msg, dict) else None
-        if method == "notifications/tools/list_changed":
-            self._change_q.put_nowait("tools")
-        elif method == "notifications/resources/list_changed":
-            self._change_q.put_nowait("resources")
-        elif method == "notifications/prompts/list_changed":
-            self._change_q.put_nowait("prompts")
+        # Shared router: response matching + notifications/list_changed routing.
+        route_incoming_message(msg, self._pending, self._change_q)
 
     async def _post(self, method: str, params: dict[str, Any] | None = None) -> Any:
         if not self._connected or not self._client or not self._post_url:
             raise UpstreamUnavailable(self.server_id)
-        req = build_request(method, params)
-        fut: asyncio.Future[dict[str, Any]] = asyncio.get_running_loop().create_future()
-        self._pending[req["id"]] = fut
-        try:
-            resp = await self._client.post(
-                self._post_url, json=req, headers=await self._auth_headers(),
-                timeout=self.request_timeout_s,
-            )
-            if resp.status_code >= 400:
-                self._pending.pop(req["id"], None)
-                self._failures += 1
-                raise UpstreamUnavailable(f"POST {self._post_url}: HTTP {resp.status_code}")
-        except httpx.TimeoutException:
-            self._pending.pop(req["id"], None)
-            self._failures += 1
-            raise UpstreamTimeout(f"{self.server_id}.{method}")
-        except httpx.HTTPError as e:
-            self._pending.pop(req["id"], None)
-            self._failures += 1
-            self._connected = False
-            raise UpstreamUnavailable(str(e)) from e
 
-        try:
-            response = await asyncio.wait_for(fut, timeout=self.request_timeout_s)
-        except TimeoutError:
-            self._pending.pop(req["id"], None)
-            self._failures += 1
-            raise UpstreamTimeout(f"{self.server_id}.{method}")
-        return unwrap_result(response)
+        async with request_future(self._pending, method, params) as (req, fut):
+            try:
+                resp = await self._client.post(
+                    self._post_url, json=req, headers=await self._auth_headers(),
+                    timeout=self.request_timeout_s,
+                )
+                if resp.status_code >= 400:
+                    self._failures += 1
+                    raise UpstreamUnavailable(f"POST {self._post_url}: HTTP {resp.status_code}")
+            except httpx.TimeoutException:
+                self._failures += 1
+                raise UpstreamTimeout(f"{self.server_id}.{method}")
+            except httpx.HTTPError as e:
+                self._connected = False
+                self._failures += 1
+                raise UpstreamUnavailable(str(e)) from e
+
+            # Successful POST; now wait for the correlated response on the SSE stream.
+            return await wait_for_response(
+                fut,
+                timeout_s=self.request_timeout_s,
+                server_id=self.server_id,
+                method=method,
+                bump_failures=lambda: setattr(self, "_failures", self._failures + 1),
+            )
 
     async def _post_notification(self, method: str, params: dict[str, Any] | None = None) -> None:
         if not self._client or not self._post_url:
