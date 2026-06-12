@@ -37,6 +37,7 @@ ENV_EXAMPLE = REPO_ROOT / ".env.example"
 EXAMPLE_CONFIG = REPO_ROOT / "config" / "gateway.example.yaml"
 GITIGNORE = REPO_ROOT / ".gitignore"
 DOCKERIGNORE = REPO_ROOT / ".dockerignore"
+DOCKERFILE = REPO_ROOT / "Dockerfile"
 
 
 # ---------------------------------------------------------------------------
@@ -266,3 +267,12 @@ def test_example_config_credential_placeholders_use_explicit_empty_default():
         "Upstream credential placeholders must use ${VAR:-} so docker compose "
         f"starts without a populated .env. Found bare refs: {bare_credential_refs}"
     )
+
+
+def test_dockerfile_includes_node_stdio_toolchain():
+    """Stdio upstreams spawn inside the runtime container; npx must be present."""
+    text = DOCKERFILE.read_text(encoding="utf-8")
+    assert "FROM node:22-bookworm-slim AS node-runtime" in text
+    assert "COPY --from=node-runtime /usr/local/bin/node" in text
+    assert "COPY --from=node-runtime /usr/local/lib/node_modules" in text
+    assert "npx-cli.js /usr/local/bin/npx" in text
