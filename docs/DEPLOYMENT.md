@@ -60,17 +60,17 @@ image therefore ships a small toolchain for the most common operator commands:
 
 | Launcher | Example command | In default image? |
 |----------|-----------------|-------------------|
-| **npx** / **node** | `npx -y @modelcontextprotocol/server-brave-search` | Yes (Node 22, copied from the admin-ui build stage) |
+| **npx** / **node** | `npx -y @modelcontextprotocol/server-brave-search` | Yes (Node 22, copied from a dedicated build stage) |
 | **python -m** | `python -m my_mcp_server` | Yes (Python 3.12 base) |
-| **uvx** / **uv run** | `uvx mcp-server-fetch` | No — add via custom image layer or run the gateway on the host |
-| **pipx run** | `pipx run mcp-server-git` | No — install pipx in a derived image or use `python -m` with pre-installed deps |
+| **uvx** / **uv run** | `uvx mcp-server-fetch` | Yes (uv 0.8.22, copied from `ghcr.io/astral-sh/uv`) |
+| **pipx run** | `pipx run mcp-server-git` | No — install pipx in a derived image or use `uvx` / `python -m` |
 | **Compiled binary** | `/usr/local/bin/my-mcp-server` | Only if you COPY it in a derived image |
 | **deno run** | `deno run …` | No |
 
 For npm servers, put API keys in the upstream **Environment** field (admin UI)
 or in `.env` (inherited by stdio children via `docker compose` `env_file`).
-Rebuild the image after upgrading the Dockerfile toolchain
-(`docker compose up --build`).
+The same applies to PyPI servers launched via `uvx`. Rebuild the image after
+upgrading the Dockerfile toolchain (`docker compose up --build`).
 
 Remote transports (**streamable_http**, **sse_legacy**) do not need a local
 launcher — the gateway connects over HTTP/SSE instead of spawning a process.

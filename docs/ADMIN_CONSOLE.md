@@ -204,10 +204,12 @@ Output: `frontend/dist/` (static assets with `base: /admin/`).
 The root `Dockerfile` builds the admin SPA in a Node stage and copies
 `frontend/dist` into `/app/admin-ui`. The same Node toolchain (`node`, `npm`,
 `npx`) is copied into the **runtime** stage so stdio upstreams can launch
-npm-published MCP servers (e.g. `npx -y firecrawl-mcp`). Python stdio commands
-(`python -m …`) work via the Python base image. See
+npm-published MCP servers (e.g. `npx -y firecrawl-mcp`). **uv** and **uvx**
+(0.8.22) are copied from `ghcr.io/astral-sh/uv` for PyPI MCP servers (e.g.
+`uvx mcp-server-fetch`). Python stdio commands (`python -m …`) work via the
+Python base image. See
 [`DEPLOYMENT.md`](DEPLOYMENT.md#stdio-upstream-launchers-in-the-runtime-image)
-for other launchers (`uvx`, `pipx`, compiled binaries).
+for other launchers (`pipx`, compiled binaries).
 
 The gateway auto-mounts the built admin UI at `/admin/` when
 `frontend/dist/index.html` or `/app/admin-ui/index.html` is present.
