@@ -42,6 +42,14 @@ except ImportError:  # pragma: no cover
 # from the auth-module salt so the two id spaces never collide.
 _TENANT_TOKEN_ID_SALT = b"concierge/auth/tenant-token-id/v1"
 
+# Stable issuer prefix stamped onto the raw secret at mint time (issue #61).
+# It makes a gateway-minted tenant token distinguishable from ordinary output, so
+# the response-side SecretRedactor can anchor a redaction pattern on it without a
+# generic length rule (which would revive the issue #6 false positives). The
+# prefix is part of the secret the digest is computed over, so it is transparent
+# to resolve(); the redactor in util/output_filter.py mirrors this literal.
+TENANT_TOKEN_PREFIX = "cgt_"
+
 
 def _digest(token: str) -> bytes:
     return hashlib.sha256(token.encode("utf-8")).digest()
@@ -82,8 +90,15 @@ class TenantTokenStore(ABC):
     """Backend-agnostic per-tenant token store."""
 
     async def mint(self, tenant_id: str) -> MintedToken:
-        """Generate a fresh token for ``tenant_id`` and persist its digest."""
-        token = secrets.token_urlsafe(32)
+        """Generate a fresh token for ``tenant_id`` and persist its digest.
+
+        The raw secret is stamped with :data:`TENANT_TOKEN_PREFIX` so it is
+        recognizable to the output redactor (issue #61). The digest — and thus
+        every lookup — is taken over the full prefixed string, so legacy tokens
+        minted before the prefix existed continue to resolve by their stored
+        digest; they simply will not be redacted until rotated.
+        """
+        token = TENANT_TOKEN_PREFIX + secrets.token_urlsafe(32)
         digest = _digest(token)
         token_id = _token_id_for(digest)
         await self._put(TenantTokenRecord(token_id=token_id, tenant_id=tenant_id, digest=digest))
@@ -262,6 +277,7 @@ __all__ = [
     "MintedToken",
     "PostgresTenantTokenStore",
     "RedisTenantTokenStore",
+    "TENANT_TOKEN_PREFIX",
     "TenantTokenLookup",
     "TenantTokenRecord",
     "TenantTokenStore",

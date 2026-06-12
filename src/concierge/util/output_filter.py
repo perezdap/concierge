@@ -20,10 +20,14 @@ from typing import Any
 #
 # This redactor is a best-effort backstop, not the primary control against
 # credential leakage. By design it only catches distinctively-prefixed secrets:
-# an unprefixed random token (e.g. a gateway-minted tenant token, which is a bare
-# secrets.token_urlsafe value) is indistinguishable from ordinary output, so it is
-# intentionally NOT matched here. Redacting those reliably requires giving such
-# tokens a stable issuer prefix at mint time — a separate change, not a regex.
+# an unprefixed random token is indistinguishable from ordinary output, so it is
+# intentionally NOT matched here.
+#
+# Gateway-minted tenant tokens now carry a stable ``cgt_`` issuer prefix at mint
+# time (issue #61, see server/tenant_tokens.py:TENANT_TOKEN_PREFIX), which makes
+# them anchorable below. Tokens minted before that change are bare
+# secrets.token_urlsafe values with no prefix; they remain unmatchable here until
+# rotated, which is the documented migration path.
 _SECRET_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"(sk-[A-Za-z0-9_-]{6,})"), "[REDACTED_SECRET]"),
     (re.compile(r"(ghp_[A-Za-z0-9_-]{6,})"), "[REDACTED_SECRET]"),
@@ -36,6 +40,9 @@ _SECRET_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"(gh[ousr]_[A-Za-z0-9_-]{20,})"), "[REDACTED_SECRET]"),  # GitHub OAuth token
     (re.compile(r"(xox[baprs]-[A-Za-z0-9-]{10,})"), "[REDACTED_SECRET]"),  # Slack token
     (re.compile(r"(AIza[0-9A-Za-z_-]{35})"), "[REDACTED_SECRET]"),  # Google API key
+    # Concierge gateway-minted tenant token: literal ``cgt_`` issuer prefix
+    # (server/tenant_tokens.py:TENANT_TOKEN_PREFIX) + a token_urlsafe(32) body.
+    (re.compile(r"(cgt_[A-Za-z0-9_-]{20,})"), "[REDACTED_SECRET]"),  # tenant token (issue #61)
 ]
 
 
