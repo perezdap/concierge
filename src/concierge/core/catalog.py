@@ -12,8 +12,26 @@ from __future__ import annotations
 
 import builtins
 from abc import ABC, abstractmethod
+from typing import Any
 
-from .types import CatalogEntry, PrimitiveType
+from ..util.log import get_logger
+from ..util.sanitize import (
+    make_canonical_name,
+    sanitize_description,
+    sanitize_label,
+    schema_hash,
+    summarize_arguments,
+    validate_input_schema,
+)
+from .types import (
+    ArgumentSummary,
+    CatalogEntry,
+    PrimitiveType,
+    RiskLevel,
+    TransportType,
+)
+
+_log = get_logger("concierge.catalog")
 
 
 class CatalogStore(ABC):
@@ -150,3 +168,61 @@ class Catalog:
 
     async def count(self) -> int:
         return sum(1 for _ in await self.store.all())
+
+
+# ---------------------------------------------------------------------------
+# Normalization helper — Extracted from AdapterManager._normalize (task #4)
+# Input: raw primitive dict (from an upstream list_* response) + server metadata.
+# Output: a single sanitized CatalogEntry or None (on malformed).
+# Pure function: no side-effects, no adapter state.
+# ---------------------------------------------------------------------------
+
+
+def normalize_catalog_entry(
+    server_id: str,
+    transport: TransportType,
+    ptype: PrimitiveType,
+    raw: dict[str, Any],
+    meta: dict[str, Any],
+) -> CatalogEntry | None:
+    """Normalize a raw upstream primitive dict into a CatalogEntry (or None if malformed)."""
+    try:
+        upstream_name = raw.get("name") or raw.get("uri") or ""
+        canonical = make_canonical_name(server_id, upstream_name)
+    except ValueError as e:
+        _log.warning("dropping malformed primitive from %s: %s", server_id, e)
+        return None
+
+    title = sanitize_label(raw.get("title") or raw.get("name") or upstream_name)
+    desc = sanitize_description(raw.get("description"))
+    if not desc:
+        desc = f"{ptype.value} provided by upstream {server_id}"
+
+    input_schema: dict[str, Any] | None = None
+    arg_summary: list[ArgumentSummary] = []
+    if ptype == PrimitiveType.TOOL:
+        input_schema = validate_input_schema(raw.get("inputSchema") or raw.get("input_schema"))
+        arg_summary = [ArgumentSummary(**a) for a in summarize_arguments(input_schema)]
+
+    risk = meta.get("default_risk", RiskLevel.MEDIUM)
+    requires_approval = upstream_name in meta.get("requires_approval_for", set())
+
+    return CatalogEntry(
+        canonical_name=canonical,
+        upstream_name=upstream_name,
+        server_id=server_id,
+        transport=transport,
+        primitive_type=ptype,
+        display_label=title,
+        title=title,
+        short_description=desc,
+        usage_guidance=None,
+        input_schema=input_schema,
+        argument_summary=arg_summary,
+        tags=list(meta.get("default_tags", [])),
+        categories=list(meta.get("default_categories", [])),
+        risk_level=risk,
+        requires_approval=requires_approval,
+        requires_auth=meta.get("requires_auth", False),
+        schema_hash=schema_hash(input_schema) if input_schema else None,
+    )

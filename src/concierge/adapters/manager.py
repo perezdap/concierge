@@ -21,13 +21,11 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from ..util.audit import AuditLogger
 
-from ..core.catalog import Catalog
+from ..core.catalog import Catalog, normalize_catalog_entry
 from ..core.types import (
-    ArgumentSummary,
     CatalogEntry,
     PrimitiveType,
     RiskLevel,
-    TransportType,
 )
 from ..errors import (
     GatewayError,
@@ -37,14 +35,6 @@ from ..errors import (
 )
 from ..observability import trace_span
 from ..util.log import get_logger
-from ..util.sanitize import (
-    make_canonical_name,
-    sanitize_description,
-    sanitize_label,
-    schema_hash,
-    summarize_arguments,
-    validate_input_schema,
-)
 from .base import UpstreamAdapter
 
 _log = get_logger("concierge.adapter.manager")
@@ -283,7 +273,9 @@ class AdapterManager:
         try:
             tools = await adapter.list_tools()
             for t in tools:
-                entry = self._normalize(server_id, adapter.transport, PrimitiveType.TOOL, t, meta)
+                entry = normalize_catalog_entry(
+                    server_id, adapter.transport, PrimitiveType.TOOL, t, meta
+                )
                 if entry is not None:
                     entries.append(entry)
         except GatewayError as e:
@@ -292,7 +284,7 @@ class AdapterManager:
         try:
             resources = await adapter.list_resources()
             for r in resources:
-                entry = self._normalize(
+                entry = normalize_catalog_entry(
                     server_id, adapter.transport, PrimitiveType.RESOURCE, r, meta
                 )
                 if entry is not None:
@@ -303,7 +295,9 @@ class AdapterManager:
         try:
             prompts = await adapter.list_prompts()
             for p in prompts:
-                entry = self._normalize(server_id, adapter.transport, PrimitiveType.PROMPT, p, meta)
+                entry = normalize_catalog_entry(
+                    server_id, adapter.transport, PrimitiveType.PROMPT, p, meta
+                )
                 if entry is not None:
                     entries.append(entry)
         except GatewayError:
@@ -311,56 +305,6 @@ class AdapterManager:
 
         await self.catalog.replace_server(server_id, entries)
         return len(entries)
-
-    def _normalize(
-        self,
-        server_id: str,
-        transport: TransportType,
-        ptype: PrimitiveType,
-        raw: dict[str, Any],
-        meta: dict[str, Any],
-    ) -> CatalogEntry | None:
-        try:
-            upstream_name = raw.get("name") or raw.get("uri") or ""
-            canonical = make_canonical_name(server_id, upstream_name)
-        except ValueError as e:
-            _log.warning("dropping malformed primitive from %s: %s", server_id, e)
-            return None
-
-        title = sanitize_label(raw.get("title") or raw.get("name") or upstream_name)
-        # IMPORTANT: do not use upstream description verbatim — sanitize.
-        desc = sanitize_description(raw.get("description"))
-        if not desc:
-            desc = f"{ptype.value} provided by upstream {server_id}"
-
-        input_schema = None
-        arg_summary: list[ArgumentSummary] = []
-        if ptype == PrimitiveType.TOOL:
-            input_schema = validate_input_schema(raw.get("inputSchema") or raw.get("input_schema"))
-            arg_summary = [ArgumentSummary(**a) for a in summarize_arguments(input_schema)]
-
-        risk = meta.get("default_risk", RiskLevel.MEDIUM)
-        requires_approval = upstream_name in meta.get("requires_approval_for", set())
-
-        return CatalogEntry(
-            canonical_name=canonical,
-            upstream_name=upstream_name,
-            server_id=server_id,
-            transport=transport,
-            primitive_type=ptype,
-            display_label=title,
-            title=title,
-            short_description=desc,
-            usage_guidance=None,
-            input_schema=input_schema,
-            argument_summary=arg_summary,
-            tags=list(meta.get("default_tags", [])),
-            categories=list(meta.get("default_categories", [])),
-            risk_level=risk,
-            requires_approval=requires_approval,
-            requires_auth=meta.get("requires_auth", False),
-            schema_hash=schema_hash(input_schema) if input_schema else None,
-        )
 
     # ------------------------------------------------------------------
     # Session registry — resolve the right upstream session for a call.
