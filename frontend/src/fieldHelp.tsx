@@ -17,6 +17,8 @@ export const FIELD_HELP = {
     "Connection type: stdio (local process), streamable_http (modern MCP HTTP), sse_legacy (HTTP+SSE), or custom (registered adapter kind). Controls which fields appear below.",
   upstreamCommand:
     "stdio only. Space-separated argv, e.g. python -m my_server.",
+  upstreamEnv:
+    "stdio only. One NAME: value per line, merged into the child process environment (after inheriting the gateway's own env). Leave blank when the MCP server reads vars already in the gateway .env — stdio children inherit the parent process environment automatically. Sensitive values are redacted in API responses; leave redacted lines unchanged on save unless replacing them.",
   upstreamUrl: "streamable_http only. The remote MCP endpoint URL.",
   upstreamSseUrl: "sse_legacy only. URL of the server-sent events stream.",
   upstreamPostUrl: "sse_legacy only. URL where JSON-RPC messages are POSTed.",
