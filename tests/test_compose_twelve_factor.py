@@ -276,3 +276,9 @@ def test_dockerfile_includes_node_stdio_toolchain():
     assert "COPY --from=node-runtime /usr/local/bin/node" in text
     assert "COPY --from=node-runtime /usr/local/lib/node_modules" in text
     assert "npx-cli.js /usr/local/bin/npx" in text
+
+
+def test_dockerfile_includes_uv_stdio_toolchain():
+    """Stdio upstreams commonly launch PyPI MCP servers via uvx."""
+    text = DOCKERFILE.read_text(encoding="utf-8")
+    assert "COPY --from=ghcr.io/astral-sh/uv:0.8.22 /uv /uvx /usr/local/bin/" in text
