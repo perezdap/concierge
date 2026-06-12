@@ -96,7 +96,7 @@ class ContentTypeFilter:
             for item in out["content"]:
                 if isinstance(item, dict):
                     ctype = item.get("type", "text")
-                    if ctype in self.allowed or ctype == "text":  # text always safe
+                    if ctype in self.allowed:
                         new_content.append(item)
                     else:
                         # drop or replace with placeholder

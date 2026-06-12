@@ -9,7 +9,12 @@ Per Builder 3 assignment (Coord 2):
 Tests written FIRST (fail), then min impl to green.
 """
 
-from concierge.util.output_filter import LengthCapper, OutputFilter, SecretRedactor
+from concierge.util.output_filter import (
+    ContentTypeFilter,
+    LengthCapper,
+    OutputFilter,
+    SecretRedactor,
+)
 
 
 def test_output_filter_redacts_fake_secret():
@@ -44,6 +49,24 @@ def test_output_filter_chains_multiple():
     t = cleaned["content"][0]["text"]
     assert "sk-abc123" not in t or "[REDACTED" in t  # redaction occurred (marker may vary by pattern match order)
     assert len(t) <= 80
+
+
+def test_content_type_filter_allows_text_by_default():
+    """Default allow-list includes text."""
+    raw = {"content": [{"type": "text", "text": "hello"}]}
+    f = ContentTypeFilter()
+    assert f.apply(raw) == raw
+
+
+def test_content_type_filter_blocks_text_when_not_allowed():
+    """Operator allow-list is respected: text can be filtered out."""
+    raw = {"content": [{"type": "text", "text": "should be filtered"}]}
+    f = ContentTypeFilter(allowed={"json"})
+    cleaned = f.apply(raw)
+    assert cleaned["content"][0] == {
+        "type": "text",
+        "text": "[filtered content-type: text]",
+    }
 
 
 def test_output_filter_pass_through_when_no_rules():
