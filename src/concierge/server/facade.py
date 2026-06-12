@@ -21,7 +21,6 @@ import asyncio
 import json
 from collections.abc import AsyncIterator
 from typing import Any
-from urllib.parse import urlparse
 
 from fastapi import APIRouter, Header, HTTPException, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -56,60 +55,6 @@ def _unsupported_protocol_version(value: str | None) -> bool:
     return value is not None and value not in SUPPORTED_PROTOCOL_VERSIONS
 
 
-def _normalize_origin(value: str | None) -> str | None:
-    """Return a canonical 'scheme://host[:port]' string for exact matching.
-
-    Returns None for unparseable values. Ports 80/443 are omitted.
-    """
-    if not value:
-        return None
-    if value == "null":
-        return "null"
-    try:
-        p = urlparse(value)
-        if not p.scheme or not p.hostname:
-            return None
-        port = p.port
-        if port is None:
-            if p.scheme == "https":
-                port = 443
-            elif p.scheme == "http":
-                port = 80
-        if port in (80, 443):
-            return f"{p.scheme}://{p.hostname}"
-        return f"{p.scheme}://{p.hostname}:{port}"
-    except Exception:  # noqa: BLE001
-        return None
-
-
-def _origin_allowed(request: Request, allowed: list[str]) -> bool:
-    """Exact Origin allow-list check (DNS rebinding / prefix attack safe).
-
-    Policy (explicit):
-    - Missing Origin header: allowed. Non-browser MCP clients (CLIs, LLM runtimes,
-      many SDKs) commonly omit Origin. This is the historical behavior.
-    - Origin: "null" (the literal string): only allowed if "null" is explicitly
-      present in allowed_origins. This value appears from sandboxed iframes,
-      data: URLs, and certain privacy modes — treat it as hostile by default.
-    - Any other present Origin: must match exactly after normalizing
-      scheme + host + port (using urllib.parse). No startswith / prefix matching.
-    """
-    origin = request.headers.get("Origin")
-
-    if origin is None:
-        return True
-
-    normalized_incoming = _normalize_origin(origin)
-    if normalized_incoming is None:
-        return False
-
-    # Normalize the allow list once per check (tiny list)
-    allowed_normalized = {
-        _normalize_origin(a) for a in allowed if a
-    }
-    return normalized_incoming in allowed_normalized
-
-
 def _jsonrpc_error_response(rid: Any, code: int, message: str, data: Any = None) -> dict[str, Any]:
     err: dict[str, Any] = {"code": code, "message": message}
     if data is not None:
@@ -127,7 +72,6 @@ def build_facade_router(
     sessions: SessionManager,
     bus: NotificationBus,
     auth: AuthProvider,
-    allowed_origins: list[str],
     path: str = "/mcp",
     drain: DrainController | None = None,
 ) -> APIRouter:
@@ -158,9 +102,6 @@ def build_facade_router(
         request: Request,
         mcp_session_id: str | None = Header(default=None, alias="MCP-Session-Id"),
     ) -> Response:
-        if not _origin_allowed(request, allowed_origins):
-            raise HTTPException(status_code=403, detail="origin not allowed")
-
         # Graceful drain (P1-7): once the process is draining for a rolling
         # restart, refuse to mint brand-new sessions so the client reconnects to
         # a healthy replica. Requests carrying an existing MCP-Session-Id are
@@ -289,8 +230,6 @@ def build_facade_router(
         request: Request,
         mcp_session_id: str | None = Header(default=None, alias="MCP-Session-Id"),
     ) -> Response:
-        if not _origin_allowed(request, allowed_origins):
-            raise HTTPException(status_code=403, detail="origin not allowed")
         if _unsupported_protocol_version(request.headers.get("MCP-Protocol-Version")):
             raise HTTPException(
                 status_code=400,

@@ -9,7 +9,12 @@ Per Builder 3 assignment (Coord 2):
 Tests written FIRST (fail), then min impl to green.
 """
 
-from concierge.util.output_filter import LengthCapper, OutputFilter, SecretRedactor
+from concierge.util.output_filter import (
+    ContentTypeFilter,
+    LengthCapper,
+    OutputFilter,
+    SecretRedactor,
+)
 
 
 def test_output_filter_redacts_fake_secret():
@@ -51,3 +56,12 @@ def test_output_filter_pass_through_when_no_rules():
     raw = {"content": [{"type": "text", "text": "normal result"}]}
     f = OutputFilter([])
     assert f.apply(raw) == raw
+
+
+def test_content_type_filter_respects_allow_list_for_text():
+    """Operator allow-list without 'text' must filter text items (no bypass)."""
+    f = ContentTypeFilter(allowed={"json"})
+    raw = {"content": [{"type": "text", "text": "hello"}, {"type": "json", "text": "{}"}]}
+    result = f.apply(raw)
+    assert result["content"][0]["text"] == "[filtered content-type: text]"
+    assert result["content"][1]["type"] == "json"
