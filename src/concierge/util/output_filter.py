@@ -17,10 +17,25 @@ from typing import Any
 # Simple secret patterns (extend as needed; keep conservative to avoid false positives).
 # Do NOT add a generic [A-Za-z0-9_-]{N,} catch-all: it matches ordinary words,
 # filenames, UUIDs in URLs, and base64-ish identifiers (see issue #6).
+#
+# This redactor is a best-effort backstop, not the primary control against
+# credential leakage. By design it only catches distinctively-prefixed secrets:
+# an unprefixed random token (e.g. a gateway-minted tenant token, which is a bare
+# secrets.token_urlsafe value) is indistinguishable from ordinary output, so it is
+# intentionally NOT matched here. Redacting those reliably requires giving such
+# tokens a stable issuer prefix at mint time — a separate change, not a regex.
 _SECRET_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"(sk-[A-Za-z0-9_-]{6,})"), "[REDACTED_SECRET]"),
     (re.compile(r"(ghp_[A-Za-z0-9_-]{6,})"), "[REDACTED_SECRET]"),
     (re.compile(r"(Bearer\s+[A-Za-z0-9._-]{6,})", re.I), "Bearer [REDACTED]"),
+    # Well-known credential formats anchored to their issuer prefix. Prefix
+    # anchoring (not a generic length rule) keeps these from re-introducing the
+    # issue #6 false positives on ordinary identifiers, UUIDs, and filenames.
+    (re.compile(r"((?:AKIA|ASIA)[0-9A-Z]{16})"), "[REDACTED_SECRET]"),  # AWS access key id
+    (re.compile(r"(github_pat_[A-Za-z0-9_]{20,})"), "[REDACTED_SECRET]"),  # GitHub fine-grained PAT
+    (re.compile(r"(gh[ousr]_[A-Za-z0-9_-]{20,})"), "[REDACTED_SECRET]"),  # GitHub OAuth token
+    (re.compile(r"(xox[baprs]-[A-Za-z0-9-]{10,})"), "[REDACTED_SECRET]"),  # Slack token
+    (re.compile(r"(AIza[0-9A-Za-z_-]{35})"), "[REDACTED_SECRET]"),  # Google API key
 ]
 
 

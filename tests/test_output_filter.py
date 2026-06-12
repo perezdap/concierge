@@ -9,6 +9,8 @@ Per Builder 3 assignment (Coord 2):
 Tests written FIRST (fail), then min impl to green.
 """
 
+import pytest
+
 from concierge.util.output_filter import (
     ContentTypeFilter,
     LengthCapper,
@@ -132,3 +134,23 @@ def test_content_type_filter_respects_allow_list_for_text():
     result = f.apply(raw)
     assert result["content"][0]["text"] == "[filtered content-type: text]"
     assert result["content"][1]["type"] == "json"
+
+
+@pytest.mark.parametrize(
+    "secret",
+    [
+        "AKIAIOSFODNN7EXAMPLE",  # AWS access key id
+        "ASIAIOSFODNN7EXAMPLE",  # AWS temporary access key id
+        "github_pat_11ABCDE0Y0abcdefghij_klmnopqrstuvwxyz0123456789ABCDEF",  # GitHub fine-grained PAT
+        "gho_16C7e42F292c6912E7710c838347Ae178B4a",  # GitHub OAuth token
+        "xoxb-1234567890-abcdefghijklmnop",  # Slack bot token
+        "AIzaSyA1234567890abcdefghijklmnopqrstuvw",  # Google API key
+    ],
+)
+def test_secret_redactor_catches_common_prefixed_credentials(secret: str) -> None:
+    """Distinctly-prefixed credential formats must still be redacted (issue #6 follow-up)."""
+    raw = {"content": [{"type": "text", "text": f"token={secret} done"}]}
+    cleaned = SecretRedactor().apply(raw)
+    text = cleaned["content"][0]["text"]
+    assert secret not in text
+    assert "[REDACTED_SECRET]" in text
