@@ -75,9 +75,10 @@ preview the profile.
 2. Set **ID** (stable, case-sensitive — profiles match this exactly).
 3. Pick **Transport** and fill connection fields (`URL` for Streamable HTTP,
    `Command` for stdio, etc.). For stdio in Docker, use commands the container
-   can run — the default image includes **Python** and **Node/npx**; see
+   can run — the default image includes **Python**, **Node/npx**, and
+   **uv/uvx**; see
    [`DEPLOYMENT.md`](DEPLOYMENT.md#stdio-upstream-launchers-in-the-runtime-image)
-   for `uvx`, `pipx`, and other launchers.
+   for `pipx`, compiled binaries, and other launchers.
 4. For stdio upstreams, set per-server env in the **Environment** field
    (`NAME: value` per line) or put vars in `.env` (inherited by child processes).
    For remote HTTP upstreams, add headers such as
