@@ -33,5 +33,18 @@ Probes target `GET /healthz` (liveness) and `GET /readyz` (readiness) on port
 disk**. TLS is terminated at the ingress / reverse proxy; the gateway speaks
 plain HTTP on 8765 inside the cluster network.
 
+> **Warning:** `k8s/configmap.yaml` defaults to `auth.type: bearer` and reads the
+> token from the `concierge-auth` Secret. Create that Secret before applying the
+> manifests:
+>
+> ```bash
+> kubectl create secret generic concierge-auth --from-literal=token=<strong-random-token>
+> ```
+>
+> Running `auth.type: localhost` with `gateway.bind_public: true` inside a Pod will
+> refuse every MCP request, because traffic via the Service arrives from the cluster
+> network rather than loopback. Treat the `deploy/k8s/*` files as a scaffold: review
+> and swap auth for your environment before deploying.
+
 See [docs/DEPLOYMENT.md](../docs/DEPLOYMENT.md) for build, lockfile, TLS, secret
 handling, vulnerability-scan, and graceful rolling-restart guidance.

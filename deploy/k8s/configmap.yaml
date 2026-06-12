@@ -16,8 +16,9 @@ data:
         - http://localhost
         - http://127.0.0.1
     auth:
-      type: localhost
-      bearer_tokens: []
+      type: bearer
+      bearer_tokens:
+        - ${CONCIERGE_BEARER_TOKEN}
     log_level: INFO
     catalog_refresh_interval_s: 300
     session_pool:

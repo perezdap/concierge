@@ -38,6 +38,11 @@ spec:
           env:
             - name: LOG_LEVEL
               value: INFO
+            - name: CONCIERGE_BEARER_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: concierge-auth
+                  key: token
           lifecycle:
             preStop:
               # Give the endpoints controller time to observe the readiness flip
