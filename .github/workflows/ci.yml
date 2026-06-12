@@ -22,10 +22,10 @@ jobs:
           pip install -e ".[test,dev]"
 
       - name: Ruff
-        run: ruff check tests
+        run: ruff check src tests
 
       - name: Mypy
-        run: mypy src/concierge/server/auth.py src/concierge/server/facade.py src/concierge/server/admin.py src/concierge/policy src/concierge/errors.py src/concierge/config.py
+        run: mypy src/concierge
 
       - name: Bandit
         run: bandit -r src/concierge -ll
