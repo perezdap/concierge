@@ -14,12 +14,13 @@ from __future__ import annotations
 import re
 from typing import Any
 
-# Simple secret patterns (extend as needed; keep conservative to avoid false positives)
+# Simple secret patterns (extend as needed; keep conservative to avoid false positives).
+# Do NOT add a generic [A-Za-z0-9_-]{N,} catch-all: it matches ordinary words,
+# filenames, UUIDs in URLs, and base64-ish identifiers (see issue #6).
 _SECRET_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"(sk-[A-Za-z0-9_-]{6,})"), "[REDACTED_SECRET]"),
     (re.compile(r"(ghp_[A-Za-z0-9_-]{6,})"), "[REDACTED_SECRET]"),
     (re.compile(r"(Bearer\s+[A-Za-z0-9._-]{6,})", re.I), "Bearer [REDACTED]"),
-    (re.compile(r"([A-Za-z0-9_-]{12,})"), "[REDACTED_LONG_TOKEN]"),  # generic long token-ish
 ]
 
 
@@ -95,7 +96,7 @@ class ContentTypeFilter:
             for item in out["content"]:
                 if isinstance(item, dict):
                     ctype = item.get("type", "text")
-                    if ctype in self.allowed or ctype == "text":  # text always safe
+                    if ctype in self.allowed:
                         new_content.append(item)
                     else:
                         # drop or replace with placeholder

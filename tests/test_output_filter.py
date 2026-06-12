@@ -53,6 +53,24 @@ def test_output_filter_chains_multiple():
     assert len(t) <= 80
 
 
+def test_content_type_filter_allows_text_by_default():
+    """Default allow-list includes text."""
+    raw = {"content": [{"type": "text", "text": "hello"}]}
+    f = ContentTypeFilter()
+    assert f.apply(raw) == raw
+
+
+def test_content_type_filter_blocks_text_when_not_allowed():
+    """Operator allow-list is respected: text can be filtered out."""
+    raw = {"content": [{"type": "text", "text": "should be filtered"}]}
+    f = ContentTypeFilter(allowed={"json"})
+    cleaned = f.apply(raw)
+    assert cleaned["content"][0] == {
+        "type": "text",
+        "text": "[filtered content-type: text]",
+    }
+
+
 def test_output_filter_pass_through_when_no_rules():
     """Default safe: empty filter or disabled returns original (conservative)."""
     raw = {"content": [{"type": "text", "text": "normal result"}]}
@@ -87,3 +105,21 @@ def test_secret_redactor_passes_through_non_dict():
 def test_redact_text_passes_through_non_string():
     """_redact_text returns non-string inputs unchanged."""
     assert _redact_text(123) == 123
+
+
+def test_secret_redactor_preserves_long_identifiers_and_urls():
+    """Generic long-token catch-all must not mangle ordinary tool output (issue #6)."""
+    raw = {
+        "content": [
+            {
+                "type": "text",
+                "text": (
+                    "See https://example.com/infrastructure-as-code "
+                    "and id 550e8400-e29b-41d4-a716-446655440000"
+                ),
+            }
+        ]
+    }
+    cleaned = SecretRedactor().apply(raw)
+    assert cleaned["content"][0]["text"] == raw["content"][0]["text"]
+    assert "[REDACTED_LONG_TOKEN]" not in cleaned["content"][0]["text"]
