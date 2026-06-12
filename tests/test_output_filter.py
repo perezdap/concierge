@@ -145,6 +145,7 @@ def test_content_type_filter_respects_allow_list_for_text():
         "gho_16C7e42F292c6912E7710c838347Ae178B4a",  # GitHub OAuth token
         "xoxb-1234567890-abcdefghijklmnop",  # Slack bot token
         "AIzaSyA1234567890abcdefghijklmnopqrstuvw",  # Google API key
+        "cgt_dGhpc19pc19hX2Zha2VfdGVuYW50X3Rva2Vu",  # concierge gateway tenant token (issue #61)
     ],
 )
 def test_secret_redactor_catches_common_prefixed_credentials(secret: str) -> None:

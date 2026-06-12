@@ -55,6 +55,36 @@ async def test_inmem_tenant_token_mint_resolve():
     assert lookup.token_id == minted.token_id
 
 
+async def test_inmem_tenant_token_mint_has_issuer_prefix():
+    """Minted tokens carry a stable issuer prefix so output redaction can catch them (issue #61)."""
+    from concierge.server.tenant_tokens import TENANT_TOKEN_PREFIX
+
+    store = InMemoryTenantTokenStore()
+    minted = await store.mint("acme")
+    assert minted.token.startswith(TENANT_TOKEN_PREFIX)
+    # The prefix is part of the secret the digest is taken over, so resolve still works.
+    lookup = await store.resolve(minted.token)
+    assert lookup is not None
+    assert lookup.tenant_id == "acme"
+
+
+async def test_inmem_tenant_token_resolves_legacy_unprefixed_token():
+    """Migration: tokens minted before the prefix existed still resolve by digest (issue #61)."""
+    import secrets
+
+    from concierge.server.tenant_tokens import TenantTokenRecord, _digest, _token_id_for
+
+    store = InMemoryTenantTokenStore()
+    legacy_token = secrets.token_urlsafe(32)  # no issuer prefix
+    digest = _digest(legacy_token)
+    await store._put(
+        TenantTokenRecord(token_id=_token_id_for(digest), tenant_id="acme", digest=digest)
+    )
+    lookup = await store.resolve(legacy_token)
+    assert lookup is not None
+    assert lookup.tenant_id == "acme"
+
+
 async def test_inmem_tenant_token_unknown_returns_none():
     store = InMemoryTenantTokenStore()
     await store.mint("acme")

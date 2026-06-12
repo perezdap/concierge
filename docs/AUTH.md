@@ -261,6 +261,17 @@ preferred for the tenant lookup when present.
 a salted SHA-256 digest, never the raw secret — the secret is shown exactly once
 at mint time. Mint / rotate / revoke via the admin HTTP path or the CLI.
 
+**Token format.** Minted tokens carry a stable `cgt_` issuer prefix (e.g.
+`cgt_<random>`). The prefix lets the response-side output redactor recognize and
+mask a leaked tenant token without a generic length heuristic that would re-flag
+ordinary identifiers (issue #6). It is part of the secret the digest is taken
+over, so it is transparent to resolution.
+
+> **Migration.** Tokens minted before the `cgt_` prefix existed keep working —
+> resolution is by stored digest, not by format — but they are *not* redactable
+> in tool output until rotated. Rotate long-lived tenant tokens to pick up the
+> prefix (and thus output redaction); revoke the old id as usual.
+
 ### Storage backends
 
 Both the revocation list and the tenant-token store use the same backend matrix
