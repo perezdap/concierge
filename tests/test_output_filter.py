@@ -51,3 +51,21 @@ def test_output_filter_pass_through_when_no_rules():
     raw = {"content": [{"type": "text", "text": "normal result"}]}
     f = OutputFilter([])
     assert f.apply(raw) == raw
+
+
+def test_secret_redactor_preserves_long_identifiers_and_urls():
+    """Generic long-token catch-all must not mangle ordinary tool output (issue #6)."""
+    raw = {
+        "content": [
+            {
+                "type": "text",
+                "text": (
+                    "See https://example.com/infrastructure-as-code "
+                    "and id 550e8400-e29b-41d4-a716-446655440000"
+                ),
+            }
+        ]
+    }
+    cleaned = SecretRedactor().apply(raw)
+    assert cleaned["content"][0]["text"] == raw["content"][0]["text"]
+    assert "[REDACTED_LONG_TOKEN]" not in cleaned["content"][0]["text"]

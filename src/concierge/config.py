@@ -284,6 +284,9 @@ class PayloadConfig(BaseModel):
 class OutputConfig(BaseModel):
     """P1-8: response-side output filtering (secret/PII redaction, caps, content-type).
     Conservative defaults: disabled (pass-through) until operator explicitly enables.
+    Secret redaction only matches known-token prefixes (e.g. sk-, ghp_, Bearer);
+    it deliberately avoids generic long-token patterns to prevent mangling ordinary
+    tool output such as URLs, UUIDs, and hyphenated identifiers (issue #6).
     """
     enable_output_filter: bool = False
     max_result_bytes: int = Field(default=8192, ge=0)  # soft cap for filter
