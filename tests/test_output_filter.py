@@ -14,6 +14,7 @@ from concierge.util.output_filter import (
     LengthCapper,
     OutputFilter,
     SecretRedactor,
+    _redact_text,
 )
 
 
@@ -39,6 +40,7 @@ def test_output_filter_caps_long_text():
     f = OutputFilter([LengthCapper(max_bytes=100)])
     cleaned = f.apply(raw)
     assert len(cleaned["content"][0]["text"]) <= 120  # cap + truncation marker (len tolerant for impl)
+    assert cleaned["content"][0]["_meta"]["gateway_truncated"] is True
 
 
 def test_output_filter_chains_multiple():
@@ -74,6 +76,35 @@ def test_output_filter_pass_through_when_no_rules():
     raw = {"content": [{"type": "text", "text": "normal result"}]}
     f = OutputFilter([])
     assert f.apply(raw) == raw
+
+
+def test_content_type_filter_replaces_disallowed_type():
+    """Non-text, non-allowed content types are replaced with a placeholder."""
+    raw = {"content": [{"type": "image/png", "data": "base64data"}]}
+    f = OutputFilter([ContentTypeFilter()])
+    cleaned = f.apply(raw)
+    assert cleaned["content"] == [
+        {"type": "text", "text": "[filtered content-type: image/png]"}
+    ]
+
+
+def test_length_capper_disabled_with_non_positive_max():
+    """A non-positive cap is a no-op pass-through."""
+    long_text = "x" * 10000
+    raw = {"content": [{"type": "text", "text": long_text}]}
+    capper = LengthCapper(max_bytes=0)
+    assert capper.apply(raw)["content"][0]["text"] == long_text
+
+
+def test_secret_redactor_passes_through_non_dict():
+    """Non-dict inputs are returned unchanged."""
+    redactor = SecretRedactor()
+    assert redactor.apply("not a dict") == "not a dict"
+
+
+def test_redact_text_passes_through_non_string():
+    """_redact_text returns non-string inputs unchanged."""
+    assert _redact_text(123) == 123
 
 
 def test_secret_redactor_preserves_long_identifiers_and_urls():
