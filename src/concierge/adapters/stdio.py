@@ -14,9 +14,14 @@ from datetime import UTC, datetime
 from typing import Any
 
 from ..core.types import AdapterHealth, TransportType
-from ..errors import UpstreamProtocolError, UpstreamTimeout, UpstreamUnavailable
+from ..errors import UpstreamProtocolError, UpstreamUnavailable
 from ..util.log import get_logger
-from ._jsonrpc import build_notification, build_request, unwrap_result
+from ._jsonrpc import (
+    build_notification,
+    request_future,
+    route_incoming_message,
+    wait_for_response,
+)
 from .base import UpstreamAdapter
 
 _log = get_logger("concierge.adapter.stdio")
@@ -157,42 +162,31 @@ class StdioAdapter(UpstreamAdapter):
             _log.debug("stdio %s stderr drain ended: %s", self.server_id, e)
 
     async def _dispatch(self, msg: dict[str, Any]) -> None:
-        if "id" in msg and msg["id"] in self._pending:
-            self._pending.pop(msg["id"]).set_result(msg)
-            return
-        # Notifications
-        method = msg.get("method")
-        if isinstance(method, str):
-            if method == "notifications/tools/list_changed":
-                self._change_q.put_nowait("tools")
-            elif method == "notifications/resources/list_changed":
-                self._change_q.put_nowait("resources")
-            elif method == "notifications/prompts/list_changed":
-                self._change_q.put_nowait("prompts")
+        # Shared router: response by id + list_changed notifications to queue.
+        route_incoming_message(msg, self._pending, self._change_q)
 
     async def _request(self, method: str, params: dict[str, Any] | None = None) -> Any:
         if not self._connected or not self._proc or not self._proc.stdin:
             raise UpstreamUnavailable(self.server_id)
-        req = build_request(method, params)
-        fut: asyncio.Future[dict[str, Any]] = asyncio.get_running_loop().create_future()
-        self._pending[req["id"]] = fut
-        line = (json.dumps(req) + "\n").encode("utf-8")
-        try:
-            self._proc.stdin.write(line)
-            await self._proc.stdin.drain()
-        except (BrokenPipeError, ConnectionResetError) as e:
-            self._pending.pop(req["id"], None)
-            self._connected = False
-            self._failures += 1
-            raise UpstreamUnavailable(str(e)) from e
 
-        try:
-            response = await asyncio.wait_for(fut, timeout=self.request_timeout_s)
-        except TimeoutError:
-            self._pending.pop(req["id"], None)
-            self._failures += 1
-            raise UpstreamTimeout(f"{self.server_id}.{method}")
-        return unwrap_result(response)
+        async with request_future(self._pending, method, params) as (req, fut):
+            line = (json.dumps(req) + "\n").encode("utf-8")
+            try:
+                self._proc.stdin.write(line)
+                await self._proc.stdin.drain()
+            except (BrokenPipeError, ConnectionResetError) as e:
+                self._connected = False
+                self._failures += 1
+                raise UpstreamUnavailable(str(e)) from e
+
+            # Future is stashed by the context; wait_for_response handles timeout + bump + unwrap.
+            return await wait_for_response(
+                fut,
+                timeout_s=self.request_timeout_s,
+                server_id=self.server_id,
+                method=method,
+                bump_failures=lambda: setattr(self, "_failures", self._failures + 1),
+            )
 
     async def _notify(self, method: str, params: dict[str, Any] | None = None) -> None:
         if not self._connected or not self._proc or not self._proc.stdin:
