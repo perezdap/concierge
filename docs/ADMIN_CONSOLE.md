@@ -201,20 +201,26 @@ Output: `frontend/dist/` (static assets with `base: /admin/`).
 
 ### Docker image
 
-The root `Dockerfile` includes an optional `admin-ui` stage that runs
-`build_frontend.py` and copies `frontend/dist` into `/app/admin-ui` in the
-runtime image. **Serving** those files still requires either:
+The root `Dockerfile` builds the admin SPA in a Node stage and copies
+`frontend/dist` into `/app/admin-ui`. The same Node toolchain (`node`, `npm`,
+`npx`) is copied into the **runtime** stage so stdio upstreams can launch
+npm-published MCP servers (e.g. `npx -y firecrawl-mcp`). Python stdio commands
+(`python -m …`) work via the Python base image. See
+[`DEPLOYMENT.md`](DEPLOYMENT.md#stdio-upstream-launchers-in-the-runtime-image)
+for other launchers (`uvx`, `pipx`, compiled binaries).
 
-- FastAPI static mount at `/admin` (gateway `app.py` wiring), or
-- Reverse proxy `location /admin/` → `alias` / `root` to the dist directory
+The gateway auto-mounts the built admin UI at `/admin/` when
+`frontend/dist/index.html` or `/app/admin-ui/index.html` is present.
 
-Until in-process static mount lands, use the Vite preview server behind your
-ingress for smoke tests:
+For local smoke tests without rebuilding the gateway image, use the Vite dev
+server (proxies API to `:8765`):
 
 ```powershell
 cd frontend
-npm run preview -- --host 127.0.0.1 --port 5173
+npm run dev
 ```
+
+Open `http://localhost:5173/admin/` (proxies API to the gateway on `:8765`).
 
 ## API surface used by the dashboard
 

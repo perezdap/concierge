@@ -74,10 +74,16 @@ preview the profile.
 1. Open **Upstreams** → **New upstream**.
 2. Set **ID** (stable, case-sensitive — profiles match this exactly).
 3. Pick **Transport** and fill connection fields (`URL` for Streamable HTTP,
-   `Command` for stdio, etc.).
-4. For remote servers, add headers such as `Authorization: Bearer secret_ref:MY_TOKEN`.
-   Put the real secret in `.env` as `MY_TOKEN=...` and restart the gateway
-   (or `docker compose restart`) so the env var is visible to the process.
+   `Command` for stdio, etc.). For stdio in Docker, use commands the container
+   can run — the default image includes **Python** and **Node/npx**; see
+   [`DEPLOYMENT.md`](DEPLOYMENT.md#stdio-upstream-launchers-in-the-runtime-image)
+   for `uvx`, `pipx`, and other launchers.
+4. For stdio upstreams, set per-server env in the **Environment** field
+   (`NAME: value` per line) or put vars in `.env` (inherited by child processes).
+   For remote HTTP upstreams, add headers such as
+   `Authorization: Bearer secret_ref:MY_TOKEN`. Put the real secret in `.env`
+   as `MY_TOKEN=...` and restart the gateway (or `docker compose restart`) so
+   the env var is visible to the process.
 5. Click **Test connection** — confirms reachability and reports discovered
    tool/resource/prompt counts.
 6. Click **Save to draft**.

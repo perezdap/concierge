@@ -7,6 +7,9 @@ RUN npm ci
 COPY frontend ./
 RUN npm run build
 
+# Toolchain copied into the Python runtime for stdio upstreams (npx/node).
+FROM node:22-bookworm-slim AS node-runtime
+
 FROM python:3.12.8-slim-bookworm@sha256:2199a62885a12290dc9c5be3ca0681d367576ab7bf037da120e564723292a2f0 AS builder
 
 WORKDIR /build
@@ -41,6 +44,15 @@ COPY src ./src
 COPY config ./config
 COPY examples ./examples
 COPY --from=admin-ui /build/frontend/dist ./admin-ui
+
+# Stdio upstreams spawn inside this container. Copy Node.js from a dedicated
+# stage and recreate npm/npx symlinks (plain COPY dereferences symlinks and
+# breaks npm-cli.js relative imports). Python (python -m …) is already
+# available from the runtime base image.
+COPY --from=node-runtime /usr/local/bin/node /usr/local/bin/node
+COPY --from=node-runtime /usr/local/lib/node_modules /usr/local/lib/node_modules
+RUN ln -sf ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
+    && ln -sf ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx
 
 RUN chown -R concierge:concierge /app
 
