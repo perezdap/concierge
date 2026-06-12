@@ -15,9 +15,10 @@ from __future__ import annotations
 import asyncio
 import secrets
 from collections import OrderedDict
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Callable
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from ..util.audit import AuditLogger
@@ -54,7 +55,7 @@ class SessionPool:
         self,
         *,
         max_upstream_sessions: int = 256,
-        audit: "AuditLogger | None" = None,
+        audit: AuditLogger | None = None,
     ) -> None:
         self.max_upstream_sessions = max_upstream_sessions
         self._audit = audit
