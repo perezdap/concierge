@@ -91,6 +91,7 @@ relevant to the chosen transport.
 | **ID** | string, required | Stable identifier for the upstream. Immutable after creation (the input is disabled when editing). This is the exact string a profile selector's **Server** field matches against, and it prefixes every `canonical_name` (`<id>__<primitive>`). |
 | **Transport** | `stdio` · `streamable_http` · `sse_legacy` · `custom` | Selects which connection fields render below. |
 | **Command** | space-separated argv | `stdio` only. e.g. `python -m my_server`. |
+| **Environment** | textarea, one `NAME: value` per line | `stdio` only. Merged into the child process environment (after inheriting the gateway's own env). Leave blank when the MCP server reads vars already in the gateway `.env`. Values are **redacted** in API responses; preserved on save unless you replace them. |
 | **URL** | string | `streamable_http` only. The MCP endpoint. |
 | **SSE URL** / **POST URL** | string each | `sse_legacy` only. Event stream URL and the message POST URL. |
 | **Custom kind** | string | `custom` only. The key of a registered custom-transport adapter. |

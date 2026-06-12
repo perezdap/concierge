@@ -14,6 +14,12 @@ import {
   prepareHeadersForSave,
   validateHeadersText,
 } from "../upstreamHeaders";
+import {
+  envToText,
+  isPreservedEnvValue,
+  prepareEnvForSave,
+  validateEnvText,
+} from "../upstreamEnv";
 import { FieldLabel } from "../fieldHelp";
 
 const TRANSPORTS: UpstreamTransport[] = ["stdio", "streamable_http", "sse_legacy", "custom"];
@@ -44,6 +50,7 @@ export default function Upstreams() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [form, setForm] = useState<UpstreamRecord>(emptyUpstream());
   const [commandText, setCommandText] = useState("");
+  const [envText, setEnvText] = useState("");
   const [headersText, setHeadersText] = useState("");
   const [isNew, setIsNew] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -51,6 +58,7 @@ export default function Upstreams() {
   const [refreshMsg, setRefreshMsg] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [baselineHeaders, setBaselineHeaders] = useState<Record<string, string>>({});
+  const [baselineEnv, setBaselineEnv] = useState<Record<string, string>>({});
 
   const loadList = useCallback(async () => {
     setError(null);
@@ -77,6 +85,8 @@ export default function Upstreams() {
       const res = await api.getUpstream(id);
       setForm(res.upstream);
       setCommandText(commandToText(res.upstream.command));
+      setEnvText(envToText(res.upstream.env ?? undefined));
+      setBaselineEnv({ ...(res.upstream.env ?? {}) });
       setHeadersText(headersToText(res.upstream.headers));
       setBaselineHeaders({ ...(res.upstream.headers ?? {}) });
     } catch (e) {
@@ -89,7 +99,9 @@ export default function Upstreams() {
     setSelectedId(null);
     setForm(emptyUpstream());
     setCommandText("");
+    setEnvText("");
     setHeadersText("");
+    setBaselineEnv({});
     setBaselineHeaders({});
     setTestResult(null);
     setRefreshMsg(null);
@@ -104,28 +116,62 @@ export default function Upstreams() {
     return headers;
   };
 
+  const parseEnvForSubmit = (): Record<string, string> | null => {
+    const { headers: env, errors } = validateEnvText(envText);
+    if (errors.length > 0) {
+      setError(errors.join("; "));
+      return null;
+    }
+    return env;
+  };
+
+  const buildUpstreamPayload = () => {
+    const isStdio = form.transport === "stdio";
+    const usesHeaders =
+      form.transport === "streamable_http" || form.transport === "sse_legacy";
+
+    const parsedHeaders = usesHeaders ? parseHeadersForSubmit() : {};
+    if (usesHeaders && parsedHeaders === null) {
+      return null;
+    }
+
+    const parsedEnv = isStdio ? parseEnvForSubmit() : null;
+    if (isStdio && parsedEnv === null) {
+      return null;
+    }
+
+    const preparedEnv =
+      isStdio && parsedEnv
+        ? (prepareEnvForSave(parsedEnv, baselineEnv) as Record<string, string>)
+        : null;
+
+    return {
+      ...form,
+      id: form.id.trim(),
+      command: isStdio ? textToCommand(commandText) : form.command,
+      env: isStdio && preparedEnv && Object.keys(preparedEnv).length > 0 ? preparedEnv : null,
+      default_tags: (form.default_tags ?? []).filter(Boolean),
+      headers: usesHeaders
+        ? (prepareHeadersForSave(parsedHeaders!, baselineHeaders) as unknown as Record<
+            string,
+            string
+          >)
+        : {},
+    };
+  };
+
   const save = async () => {
     if (!form.id.trim()) {
       setError("Upstream id is required");
       return;
     }
-    const parsedHeaders = parseHeadersForSubmit();
-    if (parsedHeaders === null) {
+    const payload = buildUpstreamPayload();
+    if (payload === null) {
       return;
     }
     setBusy(true);
     setError(null);
     try {
-      const payload = {
-        ...form,
-        id: form.id.trim(),
-        command: textToCommand(commandText),
-        default_tags: (form.default_tags ?? []).filter(Boolean),
-        headers: prepareHeadersForSave(parsedHeaders, baselineHeaders) as unknown as Record<
-          string,
-          string
-        >,
-      };
       if (isNew) {
         await api.createUpstream(payload);
       } else if (selectedId) {
@@ -137,6 +183,8 @@ export default function Upstreams() {
       const refreshed = await api.getUpstream(payload.id);
       setForm(refreshed.upstream);
       setCommandText(commandToText(refreshed.upstream.command));
+      setEnvText(envToText(refreshed.upstream.env ?? undefined));
+      setBaselineEnv({ ...(refreshed.upstream.env ?? {}) });
       setHeadersText(headersToText(refreshed.upstream.headers));
       setBaselineHeaders({ ...(refreshed.upstream.headers ?? {}) });
     } catch (e) {
@@ -156,7 +204,9 @@ export default function Upstreams() {
       setSelectedId(null);
       setForm(emptyUpstream());
       setCommandText("");
+      setEnvText("");
       setHeadersText("");
+      setBaselineEnv({});
       await loadList();
     } catch (e) {
       setError(e instanceof ApiError ? e.message : e instanceof Error ? e.message : "Delete failed");
@@ -171,10 +221,20 @@ export default function Upstreams() {
       setError("Set an upstream id before testing");
       return;
     }
-    const parsedHeaders = parseHeadersForSubmit();
-    if (parsedHeaders === null) {
+    const isStdio = form.transport === "stdio";
+    const usesHeaders =
+      form.transport === "streamable_http" || form.transport === "sse_legacy";
+
+    const parsedHeaders = usesHeaders ? parseHeadersForSubmit() : {};
+    if (usesHeaders && parsedHeaders === null) {
       return;
     }
+
+    const parsedEnv = isStdio ? parseEnvForSubmit() : null;
+    if (isStdio && parsedEnv === null) {
+      return;
+    }
+
     setBusy(true);
     setError(null);
     setTestResult(null);
@@ -182,9 +242,10 @@ export default function Upstreams() {
     try {
       const res = await api.testUpstreamConnection(id, {
         ...form,
-        command: textToCommand(commandText),
+        command: isStdio ? textToCommand(commandText) : form.command,
+        env: isStdio && parsedEnv && Object.keys(parsedEnv).length > 0 ? parsedEnv : null,
         default_tags: (form.default_tags ?? []).filter(Boolean),
-        headers: parsedHeaders,
+        headers: usesHeaders ? parsedHeaders! : {},
       });
       setTestResult(res);
     } catch (e) {
@@ -221,8 +282,8 @@ export default function Upstreams() {
     <div>
       <h1 className="page-title">Upstreams</h1>
       <p className="page-subtitle">
-        Manage upstream servers on the config draft ({source || "…"}). Secrets in headers are
-        redacted from API responses.
+        Manage upstream servers on the config draft ({source || "…"}). Headers and stdio
+        environment values are redacted from API responses.
       </p>
 
       {error ? <div className="banner error">{error}</div> : null}
@@ -288,12 +349,32 @@ export default function Upstreams() {
                 </FieldLabel>
 
                 {form.transport === "stdio" ? (
-                  <FieldLabel label="Command (space-separated)" helpKey="upstreamCommand" className="span-2">
-                    <input
-                      value={commandText}
-                      onChange={(e) => setCommandText(e.target.value)}
-                    />
-                  </FieldLabel>
+                  <>
+                    <FieldLabel label="Command (space-separated)" helpKey="upstreamCommand" className="span-2">
+                      <input
+                        value={commandText}
+                        onChange={(e) => setCommandText(e.target.value)}
+                      />
+                    </FieldLabel>
+                    <FieldLabel
+                      label="Environment (one NAME: value per line, redacted from server)"
+                      helpKey="upstreamEnv"
+                      className="span-2"
+                    >
+                      <textarea
+                        rows={4}
+                        value={envText}
+                        onChange={(e) => setEnvText(e.target.value)}
+                        placeholder="BRAVE_API_KEY: your-key-here"
+                      />
+                      {Object.values(baselineEnv).some(isPreservedEnvValue) ? (
+                        <span className="hint-text">
+                          Contains write-only / redacted values — leave unchanged or enter a new
+                          value on save.
+                        </span>
+                      ) : null}
+                    </FieldLabel>
+                  </>
                 ) : null}
 
                 {form.transport === "streamable_http" ? (
