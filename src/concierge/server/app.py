@@ -618,7 +618,6 @@ def build_app(config: GatewayConfig) -> FastAPI:
         sessions=sessions,
         bus=bus,
         auth=auth,
-        allowed_origins=config.gateway.allowed_origins,
         path=config.gateway.path,
         drain=drain,
     ))
