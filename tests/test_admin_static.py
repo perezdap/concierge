@@ -220,10 +220,20 @@ def test_admin_route_ordering_contract(
     paths = [getattr(r, "path", None) for r in app.router.routes]
     redirect_idx = paths.index("/admin")
     catchall_idx = paths.index("/admin/{rest_of_path:path}")
-    api_idxs = [i for i, p in enumerate(paths) if p and p.startswith("/admin/health")]
-    assert api_idxs, "expected an /admin/health API route to be registered"
-    assert redirect_idx < min(api_idxs), "redirect must win over API routers"
-    assert catchall_idx > max(api_idxs), "catch-all must be the last resort"
+    assert redirect_idx < catchall_idx, "redirect must win over catch-all"
+
+    # Newer FastAPI/Starlette versions may store include_router routes behind
+    # internal grouped route objects with no concrete top-level path, so direct
+    # path introspection no longer reliably sees /admin/health. Assert the same
+    # precedence contract behaviorally instead: the API route must still beat the
+    # SPA catch-all, while unknown HTML routes still fall through to the shell.
+    with TestClient(app) as client:
+        api = client.get("/admin/health", headers={"Accept": "text/html"})
+        assert api.status_code == 200
+        assert api.headers["content-type"].startswith("application/json")
+        shell = client.get("/admin/some/deep/route", headers={"Accept": "text/html"})
+        assert shell.status_code == 200
+        assert "Admin UI" in shell.text
 
 
 def test_admin_ui_absent_is_noop(gateway_config: GatewayConfig, monkeypatch) -> None:

@@ -27,6 +27,8 @@ class OAuthTokenSet:
     client_secret: str | None = None
     token_endpoint: str | None = None
     revocation_endpoint: str | None = None
+    resource: str | None = None
+    token_endpoint_auth_method: str | None = None
     flow: str = "authorization_code"
 
     def is_expired(self, *, skew_s: float = 30.0) -> bool:
@@ -46,6 +48,8 @@ class OAuthTokenSet:
             "client_secret": self.client_secret,
             "token_endpoint": self.token_endpoint,
             "revocation_endpoint": self.revocation_endpoint,
+            "resource": self.resource,
+            "token_endpoint_auth_method": self.token_endpoint_auth_method,
             "flow": self.flow,
         }
 
@@ -62,6 +66,8 @@ class OAuthTokenSet:
             client_secret=data.get("client_secret"),
             token_endpoint=data.get("token_endpoint"),
             revocation_endpoint=data.get("revocation_endpoint"),
+            resource=data.get("resource"),
+            token_endpoint_auth_method=data.get("token_endpoint_auth_method"),
             flow=str(data.get("flow", "authorization_code")),
         )
 
@@ -122,6 +128,7 @@ class UpstreamCredentialStore:
         *,
         client_id: str,
         client_secret: str | None,
+        token_endpoint_auth_method: str | None = None,
     ) -> None:
         """Persist a dynamically-registered client for (upstream, issuer)."""
         key = self._registration_key(upstream_id, issuer)
@@ -129,14 +136,19 @@ class UpstreamCredentialStore:
         cred_id = parse_secret_ref(ref) if ref else new_credential_id()
         ref = await self._backend.store(
             credential_id=cred_id,
-            payload={"client_id": client_id, "client_secret": client_secret, "issuer": issuer},
+            payload={
+                "client_id": client_id,
+                "client_secret": client_secret,
+                "issuer": issuer,
+                "token_endpoint_auth_method": token_endpoint_auth_method,
+            },
         )
         self._registration_refs[key] = ref
 
     async def load_client_registration(
         self, upstream_id: str, issuer: str
-    ) -> tuple[str, str | None] | None:
-        """Return ``(client_id, client_secret)`` for a prior DCR, if any."""
+    ) -> tuple[str, str | None, str | None] | None:
+        """Return ``(client_id, client_secret, token_auth_method)`` for prior DCR."""
         ref = self._registration_refs.get(self._registration_key(upstream_id, issuer))
         if not ref:
             return None
@@ -148,7 +160,8 @@ class UpstreamCredentialStore:
         if not client_id:
             return None
         secret = payload.get("client_secret")
-        return str(client_id), (str(secret) if secret else None)
+        method = payload.get("token_endpoint_auth_method")
+        return str(client_id), (str(secret) if secret else None), (str(method) if method else None)
 
     def get_secret_ref(self, upstream_id: str) -> str | None:
         return self._upstream_refs.get(upstream_id)

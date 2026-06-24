@@ -22,7 +22,9 @@ from concierge.admin.oauth import (
     OAuthPendingStore,
     UpstreamOAuthService,
     _parse_resource_metadata_url,
+    _resource_indicator_for,
     _same_origin,
+    _select_dcr_token_endpoint_auth_method,
 )
 from concierge.admin.secrets import InMemoryCredentialStore, resolve_fernet_key
 from concierge.server.admin_oauth import AdminOAuthDeps, build_admin_oauth_router
@@ -33,7 +35,10 @@ _AS = "https://as.mcp.test"
 _RESOURCE = "https://mcp.test/mcp"
 
 
-def _fake_mcp_stack() -> Starlette:
+def _fake_mcp_stack(
+    *,
+    token_endpoint_auth_methods_supported: list[str] | None = None,
+) -> Starlette:
     """A protected MCP resource + its DCR-capable authorization server."""
     registered: list[dict] = []
 
@@ -55,28 +60,36 @@ def _fake_mcp_stack() -> Starlette:
         )
 
     async def as_meta(_req: Request) -> JSONResponse:
-        return JSONResponse(
-            {
-                "issuer": _AS,
-                "authorization_endpoint": f"{_AS}/authorize",
-                "token_endpoint": f"{_AS}/token",
-                "registration_endpoint": f"{_AS}/register",
-            }
-        )
+        payload: dict[str, object] = {
+            "issuer": _AS,
+            "authorization_endpoint": f"{_AS}/authorize",
+            "token_endpoint": f"{_AS}/token",
+            "registration_endpoint": f"{_AS}/register",
+        }
+        if token_endpoint_auth_methods_supported is not None:
+            payload["token_endpoint_auth_methods_supported"] = (
+                token_endpoint_auth_methods_supported
+            )
+        return JSONResponse(payload)
 
     async def register(req: Request) -> JSONResponse:
         payload = await req.json()
         registered.append(payload)
-        # Public client: no secret returned.
-        return JSONResponse(
-            {"client_id": "dcr-generated-client", "redirect_uris": payload["redirect_uris"]},
-            status_code=201,
-        )
+        response: dict[str, object] = {
+            "client_id": "dcr-generated-client",
+            "redirect_uris": payload["redirect_uris"],
+        }
+        if payload.get("token_endpoint_auth_method") != "none":
+            response["client_secret"] = "dcr-generated-secret"
+        return JSONResponse(response, status_code=201)
 
     async def authorize(_req: Request) -> PlainTextResponse:
         return PlainTextResponse("ok")
 
-    async def token(_req: Request) -> JSONResponse:
+    async def token(req: Request) -> JSONResponse:
+        body = await req.body()
+        form = dict(parse_qs(body.decode(), keep_blank_values=True))
+        app.state.token_requests.append(form)
         return JSONResponse(
             {"access_token": "dcr-access", "token_type": "Bearer", "expires_in": 3600}
         )
@@ -92,6 +105,7 @@ def _fake_mcp_stack() -> Starlette:
         ]
     )
     app.state.registered = registered
+    app.state.token_requests = []
     return app
 
 
@@ -139,6 +153,23 @@ def test_same_origin():
     assert not _same_origin("https://mcp.test/a", "https://evil.test/a")  # host
     assert not _same_origin("http://mcp.test/a", "https://mcp.test/a")  # scheme
     assert not _same_origin("https://mcp.test:8443/a", "https://mcp.test/a")  # port
+
+
+def test_resource_indicator_for_mcp_endpoint_is_origin():
+    assert _resource_indicator_for("https://mcp.test/mcp/oauth") == "https://mcp.test"
+    assert _resource_indicator_for("https://mcp.test:8443/mcp?x=1") == "https://mcp.test:8443"
+
+
+def test_select_dcr_token_endpoint_auth_method():
+    assert _select_dcr_token_endpoint_auth_method(None) == "none"
+    assert _select_dcr_token_endpoint_auth_method(["none"]) == "none"
+    assert (
+        _select_dcr_token_endpoint_auth_method(["client_secret_post", "client_secret_basic"])
+        == "client_secret_post"
+    )
+    assert _select_dcr_token_endpoint_auth_method(["client_secret_basic"]) == "client_secret_basic"
+    with pytest.raises(ValueError, match="compatible token endpoint auth method"):
+        _select_dcr_token_endpoint_auth_method(["private_key_jwt"])
 
 
 @pytest.mark.asyncio
@@ -234,8 +265,9 @@ def test_probe_endpoint_reports_dcr_support():
     assert body["authorization_server"] == _AS
 
 
-def test_zero_config_sign_in_registers_and_builds_auth_url():
-    transport = httpx.ASGITransport(app=_fake_mcp_stack())
+def test_zero_config_sign_in_registers_client_for_resource_and_builds_auth_url():
+    app = _fake_mcp_stack()
+    transport = httpx.ASGITransport(app=app)
     client = _client(_svc(transport))
     r = client.post(
         "/admin/oauth/srv/sign-in/start",
@@ -245,9 +277,44 @@ def test_zero_config_sign_in_registers_and_builds_auth_url():
     url = urlparse(r.json()["authorization_url"])
     assert url.netloc == "as.mcp.test"
     qs = parse_qs(url.query)
-    # Dynamically-registered client_id is used, with PKCE.
+    # Dynamically-registered client_id is used, with PKCE and the MCP resource
+    # indicator so providers can mint an audience-bound access token.
     assert qs["client_id"] == ["dcr-generated-client"]
     assert qs["code_challenge_method"] == ["S256"]
+    assert qs["resource"] == [_RESOURCE_ORIGIN]
+    assert app.state.registered[0]["resource"] == _RESOURCE_ORIGIN
+    assert app.state.registered[0]["token_endpoint_auth_method"] == "none"
+
+
+def test_zero_config_dcr_uses_supported_confidential_client_auth():
+    app = _fake_mcp_stack(token_endpoint_auth_methods_supported=["client_secret_post"])
+    transport = httpx.ASGITransport(app=app)
+    client = _client(_svc(transport))
+    r = client.post(
+        "/admin/oauth/srv/sign-in/start",
+        json={"resource_url": _RESOURCE},
+    )
+    assert r.status_code == 200
+    assert app.state.registered[0]["token_endpoint_auth_method"] == "client_secret_post"
+    state = r.json()["state"]
+    r = client.get("/admin/oauth/callback", params={"code": "auth-code-1", "state": state})
+    assert r.status_code == 200
+    assert app.state.token_requests[0]["client_secret"] == ["dcr-generated-secret"]
+
+
+def test_zero_config_callback_sends_resource_to_token_endpoint():
+    app = _fake_mcp_stack()
+    transport = httpx.ASGITransport(app=app)
+    client = _client(_svc(transport))
+    r = client.post(
+        "/admin/oauth/srv/sign-in/start",
+        json={"resource_url": _RESOURCE},
+    )
+    assert r.status_code == 200
+    state = r.json()["state"]
+    r = client.get("/admin/oauth/callback", params={"code": "auth-code-1", "state": state})
+    assert r.status_code == 200
+    assert app.state.token_requests[0]["resource"] == [_RESOURCE_ORIGIN]
 
 
 def test_unprotected_upstream_reports_no_dcr():

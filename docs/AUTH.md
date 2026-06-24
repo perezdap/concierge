@@ -132,14 +132,21 @@ clicking **Connect** in the admin console does the whole dance automatically:
    `/.well-known/openid-configuration`) to find the authorization/token/registration
    endpoints.
 3. **Register (RFC 7591).** If the AS advertises a `registration_endpoint`,
-   Concierge dynamically registers itself as a **public, native** client
-   (`token_endpoint_auth_method: none`) — obtaining a `client_id` with no
-   pre-shared secret and no human in the loop. The registered `client_id` is
-   persisted per `(upstream, authorization-server)` and reused on subsequent
-   Connects, so repeated sign-ins don't accumulate orphaned registrations on the
-   authorization server.
-4. **Sign in (PKCE).** The browser popup completes authorization-code + PKCE; the
-   token (and refresh token) are stored and auto-refreshed like any other.
+   Concierge dynamically registers itself as a native client. It prefers a
+   public client (`token_endpoint_auth_method: none`) when the AS advertises
+   support for it; otherwise it uses a supported confidential-client method
+   (`client_secret_post` or `client_secret_basic`) and stores the returned client
+   secret encrypted with the registration. The registered client is persisted per
+   `(upstream, authorization-server)` and reused on subsequent Connects when its
+   token endpoint auth method remains compatible, so repeated sign-ins don't
+   accumulate orphaned registrations on the authorization server.
+4. **Sign in (PKCE).** Concierge includes an RFC 8707 `resource` indicator for
+   the protected MCP resource (the upstream origin, for example
+   `https://mcp.example.com`) in the authorization and token requests. Some
+   providers bind access tokens to that audience and will otherwise accept the
+   browser login but reject tool calls later. The browser popup completes
+   authorization-code + PKCE; the token (and refresh token) are stored and
+   auto-refreshed like any other.
 
 The admin console probes the upstream on selection (`POST /admin/oauth/{id}/probe`)
 and, when DCR is available, shows a single **Connect** button with no provider
@@ -161,8 +168,9 @@ upstream, the adapter consults an `OAuthAuthHeaderProvider` before every request
   header is merged over the upstream's static `headers:` (the dynamic token
   **wins** on conflict).
 - If the token is expired and a `refresh_token` is present, it is refreshed
-  in-place (using the `token_endpoint` / `client_id` / `client_secret` persisted
-  on the stored token set) before the request goes out.
+  in-place (using the `token_endpoint` / `client_id` / `client_secret`, the
+  persisted token endpoint auth method, and any RFC 8707 `resource` indicator
+  persisted on the stored token set) before the request goes out.
 - If no credential is stored — or a refresh fails — **no** `Authorization`
   header is added and the request proceeds with the static config headers only.
   This keeps the static-token path (e.g. a GitHub PAT in `headers:`) unchanged.

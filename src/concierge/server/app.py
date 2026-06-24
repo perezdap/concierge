@@ -904,6 +904,7 @@ def build_app(config: GatewayConfig) -> FastAPI:
             config_store=config_store,
             adapters=adapters,
             reload_coordinator=reload_coordinator,
+            auth_header_provider=auth_header_provider,
         )
     )
     profiles_router = build_admin_profiles_router(

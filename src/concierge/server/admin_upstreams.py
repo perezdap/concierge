@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
@@ -28,6 +28,9 @@ from ..admin.reload import ReloadCoordinator
 from ..admin.secrets import merge_write_only_secrets
 from ..config import UpstreamServerConfig
 from .auth import AuthProvider, AuthResult
+
+if TYPE_CHECKING:
+    from ..adapters.auth_headers import AuthHeaderProvider
 
 
 class UpstreamBody(BaseModel):
@@ -57,6 +60,7 @@ class AdminUpstreamsDeps:
     config_store: ConfigStore
     adapters: AdapterManager
     reload_coordinator: ReloadCoordinator | None = None
+    auth_header_provider: AuthHeaderProvider | None = None
 
 
 def _redact_upstream(entry: dict[str, Any]) -> dict[str, Any]:
@@ -227,7 +231,7 @@ def build_admin_upstreams_router(deps: AdminUpstreamsDeps) -> APIRouter:
                 ),
             )
         server_cfg = UpstreamServerConfig.model_validate(data)
-        adapter = build_adapter(server_cfg)
+        adapter = build_adapter(server_cfg, auth_header_provider=deps.auth_header_provider)
         started = time.perf_counter()
         try:
             await adapter.connect()

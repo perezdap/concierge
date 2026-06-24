@@ -15,7 +15,12 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
 from ..admin.credential_store import UpstreamCredentialStore
-from ..admin.oauth import OAuthDiscoveryDocument, UpstreamOAuthService
+from ..admin.oauth import (
+    OAuthDiscoveryDocument,
+    UpstreamOAuthService,
+    _resource_indicator_for,
+    _select_dcr_token_endpoint_auth_method,
+)
 from ..admin.oauth_providers import get_provider, public_catalog
 from ..util.audit import AuditLogger
 from .auth import AuthProvider, AuthResult
@@ -51,6 +56,7 @@ class ClientCredentialsRequest(BaseModel):
     client_secret: str = Field(min_length=1)
     scopes: str = ""
     issuer: str | None = None
+    resource: str | None = None
 
 
 @dataclass
@@ -60,6 +66,8 @@ class _ResolvedSignIn:
     client_secret: str | None
     scopes: str
     extra_authorize_params: dict[str, str]
+    resource: str | None = None
+    token_endpoint_auth_method: str | None = None
 
 
 @dataclass
@@ -143,6 +151,7 @@ async def _resolve_dcr(
     (RFC 7591) so no client_id/secret or operator setup is needed.
     """
     resource_url = body.resource_url or ""
+    resource = _resource_indicator_for(resource_url)
     auth_servers = await deps.oauth.probe_resource_metadata(resource_url)
     if not auth_servers:
         raise HTTPException(
@@ -154,6 +163,7 @@ async def _resolve_dcr(
             ),
         )
     discovery = await deps.oauth.discover_authorization_server(auth_servers[0])
+    discovery.resource = resource
     if not discovery.registration_endpoint:
         raise HTTPException(
             status_code=422,
@@ -165,19 +175,31 @@ async def _resolve_dcr(
     # Reuse a previously-registered client for this (upstream, issuer) rather
     # than registering a fresh one on every Connect — repeated sign-ins would
     # otherwise accumulate orphaned client registrations on the auth server.
+    token_endpoint_auth_method = _select_dcr_token_endpoint_auth_method(
+        discovery.token_endpoint_auth_methods_supported
+    )
     existing = await deps.credentials.load_client_registration(upstream_id, discovery.issuer)
     if existing is not None:
-        client_id, client_secret = existing
-    else:
+        client_id, client_secret, existing_method = existing
+        existing_method = existing_method or ("client_secret_post" if client_secret else "none")
+        compatible = existing_method == token_endpoint_auth_method and (
+            token_endpoint_auth_method == "none" or client_secret is not None
+        )
+        if not compatible:
+            existing = None
+    if existing is None:
         client_id, client_secret = await deps.oauth.register_client(
             registration_endpoint=discovery.registration_endpoint,
             redirect_uri=redirect_uri,
+            resource=resource,
+            token_endpoint_auth_method=token_endpoint_auth_method,
         )
         await deps.credentials.save_client_registration(
             upstream_id,
             discovery.issuer,
             client_id=client_id,
             client_secret=client_secret,
+            token_endpoint_auth_method=token_endpoint_auth_method,
         )
     return _ResolvedSignIn(
         discovery=discovery,
@@ -185,6 +207,8 @@ async def _resolve_dcr(
         client_secret=client_secret,
         scopes=body.scopes or "",
         extra_authorize_params={},
+        resource=resource,
+        token_endpoint_auth_method=token_endpoint_auth_method,
     )
 
 
@@ -294,6 +318,8 @@ def build_admin_oauth_router(deps: AdminOAuthDeps) -> APIRouter:
                 scopes=params.scopes,
                 client_secret=params.client_secret,
                 extra_authorize_params=params.extra_authorize_params,
+                resource=params.resource,
+                token_endpoint_auth_method=params.token_endpoint_auth_method,
             )
         except HTTPException:
             raise
@@ -329,6 +355,7 @@ def build_admin_oauth_router(deps: AdminOAuthDeps) -> APIRouter:
                 client_secret=body.client_secret,
                 scopes=body.scopes,
                 issuer=body.issuer,
+                resource=body.resource,
             )
         except Exception as e:  # noqa: BLE001
             raise HTTPException(status_code=400, detail=str(e)) from e
