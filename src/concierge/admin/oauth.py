@@ -8,7 +8,7 @@ import re
 import secrets
 import time
 from dataclasses import dataclass
-from urllib.parse import urlencode, urlsplit
+from urllib.parse import urlencode, urlsplit, urlunsplit
 
 import httpx
 
@@ -39,6 +39,9 @@ class OAuthDiscoveryDocument:
     # RFC 7591 Dynamic Client Registration endpoint, when the authorization
     # server advertises one. Presence enables zero-config registration.
     registration_endpoint: str | None = None
+    # RFC 8707 resource indicator for the protected MCP resource, when known.
+    resource: str | None = None
+    token_endpoint_auth_methods_supported: list[str] | None = None
 
 
 @dataclass
@@ -55,6 +58,8 @@ class PendingAuthorization:
     revocation_endpoint: str | None
     issuer: str
     scopes: str
+    resource: str | None
+    token_endpoint_auth_method: str | None
     created_at: float
     expires_at: float
 
@@ -103,6 +108,37 @@ def _origin_of(url: str) -> str:
     """Return scheme://host[:port] for ``url`` (no path/query)."""
     parsed = urlsplit(url)
     return f"{parsed.scheme}://{parsed.netloc}"
+
+
+def _resource_indicator_for(url: str) -> str:
+    """Return the RFC 8707 resource indicator for a protected MCP endpoint.
+
+    Some MCP OAuth providers bind issued access tokens to the protected resource
+    origin, not the concrete transport path (e.g. ``https://host`` rather than
+    ``https://host/mcp/oauth``).  Prefer the origin form so the token audience
+    matches the resource metadata document's ``resource`` value.
+    """
+    parsed = urlsplit(url)
+    return urlunsplit((parsed.scheme, parsed.netloc, "", "", ""))
+
+
+def _select_dcr_token_endpoint_auth_method(methods: list[str] | None) -> str:
+    """Choose a DCR token endpoint auth method Concierge can perform.
+
+    Older tests/providers may omit ``token_endpoint_auth_methods_supported``;
+    keep the previous public-client behavior in that case. When an AS explicitly
+    advertises supported methods, respect it: prefer public clients when allowed,
+    otherwise use a confidential client method that Concierge can satisfy.
+    """
+    if not methods or "none" in methods:
+        return "none"
+    if "client_secret_post" in methods:
+        return "client_secret_post"
+    if "client_secret_basic" in methods:
+        return "client_secret_basic"
+    raise ValueError(
+        "authorization server does not support a compatible token endpoint auth method"
+    )
 
 
 _DEFAULT_PORTS = {"http": 80, "https": 443}
@@ -237,12 +273,16 @@ class UpstreamOAuthService:
             if not authz or not token:
                 last_err = ValueError("AS metadata missing authorization or token endpoint")
                 continue
+            methods = doc.get("token_endpoint_auth_methods_supported")
             return OAuthDiscoveryDocument(
                 issuer=str(doc.get("issuer", base)),
                 authorization_endpoint=str(authz),
                 token_endpoint=str(token),
                 revocation_endpoint=doc.get("revocation_endpoint"),
                 registration_endpoint=doc.get("registration_endpoint"),
+                token_endpoint_auth_methods_supported=(
+                    [str(m) for m in methods] if isinstance(methods, list) else None
+                ),
             )
         raise ValueError(f"could not discover authorization server at {base}: {last_err}")
 
@@ -299,22 +339,30 @@ class UpstreamOAuthService:
         registration_endpoint: str,
         redirect_uri: str,
         client_name: str = "Concierge MCP Gateway",
+        resource: str | None = None,
+        token_endpoint_auth_method: str = "none",
     ) -> tuple[str, str | None]:
         """Dynamically register an OAuth client (RFC 7591).
 
         Returns ``(client_id, client_secret)``; ``client_secret`` is ``None`` for
-        public clients (the common case for PKCE). Registers as a ``native``
-        application using the authorization-code grant with PKCE so no secret is
-        required and no operator setup is needed.
+        public clients. Registers as a ``native`` application using the
+        authorization-code grant with PKCE. If the authorization server does not
+        advertise public clients (``token_endpoint_auth_method: none``), callers
+        may request a confidential method and persist the returned secret.
         """
         payload = {
             "client_name": client_name,
             "redirect_uris": [redirect_uri],
             "grant_types": ["authorization_code", "refresh_token"],
             "response_types": ["code"],
-            "token_endpoint_auth_method": "none",
+            "token_endpoint_auth_method": token_endpoint_auth_method,
             "application_type": "native",
         }
+        if resource:
+            # Some MCP OAuth providers bind dynamically-registered clients to a
+            # protected resource, then mint audience-specific access tokens for
+            # that resource during the authorization-code exchange.
+            payload["resource"] = resource
         client = await self._client()
         try:
             resp = await client.post(registration_endpoint, json=payload)
@@ -346,11 +394,14 @@ class UpstreamOAuthService:
         scopes: str,
         client_secret: str | None = None,
         extra_authorize_params: dict[str, str] | None = None,
+        resource: str | None = None,
+        token_endpoint_auth_method: str | None = None,
     ) -> tuple[str, str]:
         state = secrets.token_urlsafe(24)
         verifier = secrets.token_urlsafe(48)
         nonce = secrets.token_urlsafe(16)
         now = time.time()
+        token_resource = resource or discovery.resource
         pending = PendingAuthorization(
             upstream_id=upstream_id,
             state=state,
@@ -364,6 +415,8 @@ class UpstreamOAuthService:
             revocation_endpoint=discovery.revocation_endpoint,
             issuer=discovery.issuer,
             scopes=scopes,
+            resource=token_resource,
+            token_endpoint_auth_method=token_endpoint_auth_method,
             created_at=now,
             expires_at=now + self.pending.ttl_s,
         )
@@ -378,6 +431,8 @@ class UpstreamOAuthService:
             "code_challenge": pkce_challenge(verifier),
             "code_challenge_method": "S256",
         }
+        if token_resource:
+            params["resource"] = token_resource
         # Provider-specific quirks (e.g. Google access_type=offline, Atlassian
         # audience). Never allowed to override the security-critical PKCE/state
         # params above.
@@ -407,18 +462,32 @@ class UpstreamOAuthService:
             "grant_type": "authorization_code",
             "code": code,
             "redirect_uri": pending.redirect_uri,
-            "client_id": pending.client_id,
             "code_verifier": pending.code_verifier,
         }
-        if pending.client_secret:
+        if pending.token_endpoint_auth_method != "client_secret_basic":
+            data["client_id"] = pending.client_id
+        if pending.resource:
+            data["resource"] = pending.resource
+        if (
+            pending.client_secret
+            and pending.token_endpoint_auth_method != "client_secret_basic"
+        ):
             data["client_secret"] = pending.client_secret
+        headers = self._token_request_headers(
+            client_id=pending.client_id,
+            client_secret=pending.client_secret,
+            token_endpoint_auth_method=pending.token_endpoint_auth_method,
+        )
         tokens, body = await self._exchange_token(
             pending.token_endpoint,
             data,
+            headers=headers,
             issuer=pending.issuer,
             client_id=pending.client_id,
             client_secret=pending.client_secret,
             revocation_endpoint=pending.revocation_endpoint,
+            resource=pending.resource,
+            token_endpoint_auth_method=pending.token_endpoint_auth_method,
             flow="authorization_code",
         )
         if scopes_require_nonce(pending.scopes):
@@ -446,6 +515,7 @@ class UpstreamOAuthService:
         scopes: str = "",
         issuer: str | None = None,
         revocation_endpoint: str | None = None,
+        resource: str | None = None,
     ) -> OAuthTokenSet:
         data: dict[str, str] = {
             "grant_type": "client_credentials",
@@ -454,6 +524,8 @@ class UpstreamOAuthService:
         }
         if scopes:
             data["scope"] = scopes
+        if resource:
+            data["resource"] = resource
         tokens, _body = await self._exchange_token(
             token_endpoint,
             data,
@@ -461,6 +533,8 @@ class UpstreamOAuthService:
             client_id=client_id,
             client_secret=client_secret,
             revocation_endpoint=revocation_endpoint,
+            resource=resource,
+            token_endpoint_auth_method="client_secret_post",
             flow="client_credentials",
         )
         await self.credentials.save_tokens(upstream_id, tokens)
@@ -471,15 +545,31 @@ class UpstreamOAuthService:
             )
         return tokens
 
+    @staticmethod
+    def _token_request_headers(
+        *,
+        client_id: str | None,
+        client_secret: str | None,
+        token_endpoint_auth_method: str | None,
+    ) -> dict[str, str]:
+        headers = {"Accept": "application/json"}
+        if token_endpoint_auth_method == "client_secret_basic" and client_id and client_secret:
+            raw = f"{client_id}:{client_secret}".encode()
+            headers["Authorization"] = "Basic " + base64.b64encode(raw).decode("ascii")
+        return headers
+
     async def _exchange_token(
         self,
         token_endpoint: str,
         data: dict[str, str],
         *,
+        headers: dict[str, str] | None = None,
         issuer: str | None,
         client_id: str | None,
         client_secret: str | None,
         revocation_endpoint: str | None,
+        resource: str | None,
+        token_endpoint_auth_method: str | None,
         flow: str,
     ) -> tuple[OAuthTokenSet, dict[str, object]]:
         client = await self._client()
@@ -487,7 +577,7 @@ class UpstreamOAuthService:
             resp = await client.post(
                 token_endpoint,
                 data=data,
-                headers={"Accept": "application/json"},
+                headers=headers or {"Accept": "application/json"},
             )
             resp.raise_for_status()
             body = resp.json()
@@ -511,6 +601,8 @@ class UpstreamOAuthService:
             client_secret=client_secret,
             token_endpoint=token_endpoint,
             revocation_endpoint=revocation_endpoint,
+            resource=resource,
+            token_endpoint_auth_method=token_endpoint_auth_method,
             flow=flow,
         )
         return tokens, body
@@ -534,17 +626,28 @@ class UpstreamOAuthService:
         data: dict[str, str] = {
             "grant_type": "refresh_token",
             "refresh_token": current.refresh_token,
-            "client_id": client_id,
         }
-        if client_secret:
+        if current.token_endpoint_auth_method != "client_secret_basic":
+            data["client_id"] = client_id
+        if current.resource:
+            data["resource"] = current.resource
+        if client_secret and current.token_endpoint_auth_method != "client_secret_basic":
             data["client_secret"] = client_secret
+        headers = self._token_request_headers(
+            client_id=client_id,
+            client_secret=client_secret,
+            token_endpoint_auth_method=current.token_endpoint_auth_method,
+        )
         refreshed, _body = await self._exchange_token(
             token_endpoint,
             data,
+            headers=headers,
             issuer=current.issuer,
             client_id=client_id,
             client_secret=client_secret,
             revocation_endpoint=current.revocation_endpoint,
+            resource=current.resource,
+            token_endpoint_auth_method=current.token_endpoint_auth_method,
             flow=current.flow,
         )
         if refreshed.refresh_token is None:
@@ -587,6 +690,7 @@ class UpstreamOAuthService:
                 scopes=current.scope or "",
                 issuer=current.issuer,
                 revocation_endpoint=current.revocation_endpoint,
+                resource=current.resource,
             )
         if not current.refresh_token or not current.token_endpoint or not current.client_id:
             raise ValueError(
