@@ -438,7 +438,10 @@ a:hover {
   align-items: center;
 }
 
-.field-help-trigger {
+.field-help .field-help-trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   width: 1.1rem;
   height: 1.1rem;
   padding: 0;
@@ -454,8 +457,8 @@ a:hover {
   flex-shrink: 0;
 }
 
-.field-help-trigger:hover,
-.field-help-trigger:focus-visible {
+.field-help .field-help-trigger:hover,
+.field-help .field-help-trigger:focus-visible {
   border-color: var(--accent-dim);
   color: var(--accent);
   outline: none;
