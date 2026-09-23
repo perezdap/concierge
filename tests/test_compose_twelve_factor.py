@@ -256,6 +256,20 @@ def test_example_config_loads_with_dummy_env(monkeypatch):
     assert "dummy" in auth, f"NOTES_TOKEN env-templating broke; got header: {auth!r}"
 
 
+def test_example_config_upstreams_build_adapters(monkeypatch):
+    """Regression: load_config accepts transport fields the adapter factory
+    rejects (sse_legacy with `url` instead of `sse_url`). Build every
+    upstream so the example fails here instead of at gateway startup."""
+    monkeypatch.delenv("NOTES_TOKEN", raising=False)
+    monkeypatch.delenv("JIRA_TOKEN", raising=False)
+    from concierge.adapters.factory import build_adapter  # type: ignore
+    from concierge.config import load_config  # type: ignore
+
+    cfg = load_config(EXAMPLE_CONFIG)
+    for server in cfg.upstream_servers:
+        build_adapter(server)
+
+
 def test_example_config_credential_placeholders_use_explicit_empty_default():
     """Regression: bare ${VAR} for upstream credentials breaks first-run Docker."""
     text = EXAMPLE_CONFIG.read_text(encoding="utf-8")

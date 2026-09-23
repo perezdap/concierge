@@ -164,10 +164,13 @@ everything through the UI:
 # 1. Generate GATEWAY_TOKEN in .env (idempotent — safe to re-run)
 python -m concierge init
 
-# 2. Start the gateway (localhost auth, no token needed)
+# 2. Build the admin UI (requires Node.js; re-run after frontend changes)
+python scripts/build_frontend.py --install
+
+# 3. Start the gateway (localhost auth, no token needed)
 .\.venv\Scripts\concierge.exe --config config\starter.yaml
 
-# 3. Open the admin panel
+# 4. Open the admin panel
 #    http://localhost:8765/admin
 ```
 
