@@ -22,7 +22,7 @@ upstream_servers:
 
   - id: legacy-jira
     transport: sse_legacy
-    url: http://localhost:8002/sse
+    sse_url: http://localhost:8002/sse
     headers:
       Authorization: "Bearer ${JIRA_TOKEN:-}"
 
