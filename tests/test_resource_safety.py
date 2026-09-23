@@ -46,6 +46,20 @@ async def test_connect_starts_stderr_drain_task():
 
 
 @pytest.mark.asyncio
+@pytest.mark.skipif(sys.platform != "win32", reason="PATHEXT resolution is Windows-only")
+async def test_connect_resolves_cmd_shim_on_windows(tmp_path):
+    """Regression: a bare `npx` failed with WinError 2 because CreateProcess
+    ignores PATHEXT and npx ships as npx.cmd."""
+    (tmp_path / "fakelauncher.cmd").write_text("@echo off\r\n", encoding="utf-8")
+    adapter = StdioAdapter("t", ["fakelauncher"], env={"PATH": str(tmp_path)})
+    await adapter.connect()
+    try:
+        assert adapter._proc is not None
+    finally:
+        await adapter.close()
+
+
+@pytest.mark.asyncio
 async def test_large_stderr_burst_does_not_deadlock_stdout_response():
     """A child that floods stderr *before* replying on stdout must not hang.
 
