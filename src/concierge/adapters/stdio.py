@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import shutil
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from typing import Any
@@ -57,16 +58,34 @@ class StdioAdapter(UpstreamAdapter):
         self._failures = 0
 
     # ------------------------------------------------------------------
+    async def _spawn(self, argv: list[str]) -> asyncio.subprocess.Process:
+        return await asyncio.create_subprocess_exec(
+            *argv,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=self.env,
+            cwd=self.cwd,
+        )
+
     async def connect(self) -> None:
         try:
-            self._proc = await asyncio.create_subprocess_exec(
-                *self.command,
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                env=self.env,
-                cwd=self.cwd,
-            )
+            try:
+                self._proc = await self._spawn(self.command)
+            except FileNotFoundError:
+                # CreateProcess ignores PATHEXT, so launchers shipped as .cmd
+                # shims (npx, npm, pnpm) fail with WinError 2. Retry via the
+                # PATHEXT-aware lookup only on failure: CreateProcess searches
+                # the parent's exe dir (e.g. .venv\Scripts) before PATH, and
+                # shutil.which does not.
+                resolved = (
+                    shutil.which(self.command[0], path=self.env.get("PATH"))
+                    if os.name == "nt" and self.command
+                    else None
+                )
+                if not resolved:
+                    raise
+                self._proc = await self._spawn([resolved, *self.command[1:]])
         except OSError as e:
             self._last_error = str(e)
             self._failures += 1
