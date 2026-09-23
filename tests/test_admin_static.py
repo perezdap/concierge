@@ -236,12 +236,16 @@ def test_admin_route_ordering_contract(
         assert "Admin UI" in shell.text
 
 
-def test_admin_ui_absent_is_noop(gateway_config: GatewayConfig, monkeypatch) -> None:
+def test_admin_ui_absent_is_noop(gateway_config: GatewayConfig, monkeypatch, capsys) -> None:
     monkeypatch.setattr(
         "concierge.server.admin_static.resolve_admin_ui_dist",
         lambda: None,
     )
-    with TestClient(build_app(gateway_config)) as client:
+    # build_app's configure_logging replaces root handlers (dropping caplog's),
+    # so assert on the stderr stream it installs instead.
+    app = build_app(gateway_config)
+    assert "admin UI not built" in capsys.readouterr().err
+    with TestClient(app) as client:
         assert client.get("/admin/health").status_code == 200
         assert not hasattr(client.app.state, "admin_ui_index") or (
             client.app.state.admin_ui_index is None

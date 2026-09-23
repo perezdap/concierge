@@ -11,6 +11,10 @@ from starlette.responses import Response
 from starlette.routing import Route
 from starlette.staticfiles import StaticFiles
 
+from ..util.log import get_logger
+
+_log = get_logger("concierge.admin_static")
+
 # Vite emits content-hashed asset filenames (e.g. index-DQ4TiwWc.js), so the
 # bytes behind a given URL never change -- they are safe to cache forever.
 _ASSET_CACHE_CONTROL = "public, max-age=31536000, immutable"
@@ -133,6 +137,11 @@ def install_admin_ui(app: FastAPI) -> Path | None:
     """
     dist = resolve_admin_ui_dist()
     if dist is None:
+        # Without this, GET /admin/ is a bare 404 with no hint why.
+        _log.warning(
+            "admin UI not built: /admin/ will return 404. "
+            "Run `python scripts/build_frontend.py --install` or set CONCIERGE_ADMIN_UI_DIST."
+        )
         app.state.admin_ui_dist = None
         return None
 
